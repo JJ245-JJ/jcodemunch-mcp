@@ -372,6 +372,7 @@ _NON_CHANNEL_SPEC_FIELDS = frozenset(
 _SCALAR_SPEC_ANNOTATIONS = (
     "str",
     "Optional[str]",
+    "str|None",  # Python 3.14 stringifies Optional[str] as `str | None`
     "bool",
 )
 

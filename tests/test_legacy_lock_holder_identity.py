@@ -15,6 +15,7 @@ contract the defect lacked.
 
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -272,6 +273,9 @@ def test_a_real_flock_on_a_month_old_legacy_lock_keeps_it_live(tmp_path):
     finally:
         os.close(fd)
     # Released: the same lock is stale again, and the probe left no lock behind.
-    assert process_locks.inspect(SCOPE, target, str(tmp_path)) is None
+    # macOS has no process creation-time source, so a live PID stays a live
+    # holder there by design (liveness-only); only the flock half applies.
+    if sys.platform != "darwin":
+        assert process_locks.inspect(SCOPE, target, str(tmp_path)) is None
     assert process_locks._flock_proves_a_holder(lock_fp, None) is False
     assert process_locks._flock_proves_a_holder(lock_fp, None) is False
