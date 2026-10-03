@@ -84,7 +84,7 @@ right shape, but nothing prevents the next one.
 Metric: per-tool p50 / p95 from `analyze_perf`; cold and warm latency of the six core tools on the self corpus.
 Method: today, the script in `DISCOVERY.md` §3 (hand-run). `analyze_perf` reports from a session ring (512 calls) or the opt-in `telemetry.db`.
 Current (2026-09-03, self corpus, fresh process): `search_symbols` cold 2,605.9 ms / warm 0.8 ms; `search_text` cold 8,780.4 ms / warm 325.9-383.4 ms; `get_symbol_source` warm 7.4 ms. No committed artifact carries any of these.
-Floor: [`latency.<tool>_warm_p95_ms`] for `search_symbols`, `search_text`, `get_symbol_source`, `get_file_outline`: 2x the median of three consecutive `benchmarks/self_latency/measure.py` runs on the src-only self corpus (set 2026-09-03; medians 11.2 / 135.3 / 13.1 / 13.9 ms). `analyze_perf` still refuses to diff latency against the TOKEN baselines (v1.108.309), correctly; this artifact is the latency baseline it lacked.
+Floor: [`latency.<tool>_warm_p95_ms`] for `search_symbols`, `search_text`, `get_symbol_source`, `get_file_outline`: 2x the median of three consecutive `benchmarks/self_latency/measure.py` runs on the src-only self corpus (set 2026-09-03; medians 11.2 / 135.3 / 13.1 / 13.9 ms). Since 2026-09-28 (#906, #911, harness F-19) a 20-call series whose p95 FAILS is measured once more in the same process and the SECOND series is gated; the first p95 is kept in the artifact. That trades detection for runner noise: a defect that slows 10% of calls fails one series with p 0.61 and two with p 0.37, so a tail-only regression can pass on the second series and is visible only in `self_latency.json` (`latency.<tool>_resampled: true` beside `_warm_p95_first_ms`) and the step log. `analyze_perf` still refuses to diff latency against the TOKEN baselines (v1.108.309), correctly; this artifact is the latency baseline it lacked.
 Target: warm p95 under 500 ms for `search_symbols`, `search_text`, `get_symbol_source`, `get_file_outline` on the self corpus in CI; cold first-call under 5 s.
 Status: MEASURED (bench tier).
 Gap: CI runner noise is unmeasured until `pr-gate.yml`/`main.yml` have produced three bench runs; `search_text` at 10x `search_symbols` warm (FINDINGS F-07) is the first thing to profile.
@@ -216,6 +216,15 @@ Floor: ubuntu at or under 30, windows at or under 25.
 Target: a step that fails the job when `skipped` exceeds the floor.
 Status: MEASURED and enforced (`pr-gate.yml` fails a leg over [`ci.skips_ubuntu`] / [`ci.skips_windows`]; the full tier applies the same ceiling locally).
 Gap: reconcile the 19-vs-13 local delta (FINDINGS F-05).
+
+### N8. Release latency
+Metric: hours an entry in `CHANGELOG.md`'s `[Unreleased]` block has waited, from the commit at which the block last went from empty to non-empty on the measured ref's first-parent chain.
+Method: `harness/release_age.py`, run by the fast tier (`python -m harness check release.unreleased_max_hours`). The ref is `main` as users receive it: the upstream remote's `main` locally (found by URL, with the fetch age in the verdict line), the test merge's first parent on a `pull_request` run; every other GitHub event prints `not evaluated`. A release cut in the working tree (the block emptied under a new version heading) reads 0, so the release commit is never refused.
+Current: 1.108.320 shipped 14 days and 124 PRs after 1.108.319 (CLAUDE.md Standing lesson 09-30).
+Floor: at or under [`release.unreleased_max_hours`] (jjg, 2026-09-30). UNKNOWN (a shallow history, a git failure) fails.
+Target: the Floor, held.
+Status: MEASURED (fast tier, commit hook and `pr-gate.yml` stage 1).
+Gap: a release PR merged but not dispatched reads 0; the tag is the publish, and `scripts/release_preflight.py` owns that gap. Past the Floor, a fix `main` needs before the release cannot merge on its own: it rides the release PR, or follows it (`docs/cicd/RUNBOOK.md` section 1).
 
 ---
 

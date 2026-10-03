@@ -163,6 +163,166 @@ def test_rename_against_scan_collision_gives_up_rather_than_hiding_a_lock():
     assert len(calls) == 3
 
 
+class _WatchTrace:
+    """What the watcher saw and did, for a timeout message (#866).
+
+    A timeout used to report only the persisted rows, which cannot tell "the
+    event never arrived" from "the reindex ran and wrote nothing". This records
+    every change batch the watcher's `awatch` stream yielded (empty ones are
+    counted: `yield_on_timeout` makes the stream yield about once a second, so
+    they show the loop was alive), and every `index_folder` call's start and
+    end, so a reindex still running at the timeout has no `end`. A call's
+    scalar results are kept, `fast_path` and `message` included: two different
+    no-change exits both return `changed=0` and only those name which fired.
+    """
+
+    def __init__(self, root):
+        self.root = str(root)
+        self.t0 = time.monotonic()
+        self.batches: list = []
+        self.empty = 0
+        self.last_empty = None
+        self.calls: list = []
+
+    def _now(self):
+        return round(time.monotonic() - self.t0, 2)
+
+    def _rel(self, path):
+        text = str(path)
+        return text[len(self.root):].lstrip("\\/").replace("\\", "/") if text.startswith(self.root) else text
+
+    def _change(self, change):
+        # The watcher passes `WatcherChange(change_type, path, old_hash)`; a
+        # bare path is rendered as itself.
+        path = getattr(change, "path", change)
+        kind = getattr(change, "change_type", None)
+        old = getattr(change, "old_hash", None)
+        return ":".join(str(x) for x in (kind, self._rel(path), old) if x is not None)
+
+    def record_batch(self, changes):
+        if not changes:
+            self.empty += 1
+            self.last_empty = self._now()
+            return
+        self.batches.append((self._now(), sorted(f"{c.name}:{self._rel(p)}" for c, p in changes)))
+
+    def wrap_awatch(self, awatch):
+        async def traced(*paths, **kwargs):
+            async with aclosing(awatch(*paths, **kwargs)) as stream:
+                async for changes in stream:
+                    self.record_batch(changes)
+                    yield changes
+        return traced
+
+    def wrap_index_folder(self, index_folder):
+        def traced(**kwargs):
+            changed = kwargs.get("changed_paths")
+            entry = {
+                "start": self._now(),
+                "changed_paths": None if changed is None else sorted(self._change(c) for c in changed)[:8],
+            }
+            self.calls.append(entry)
+            try:
+                result = index_folder(**kwargs)
+            except BaseException as error:
+                entry["end"], entry["raised"] = self._now(), type(error).__name__
+                raise
+            entry["end"] = self._now()
+            if isinstance(result, dict):
+                entry["result"] = {
+                    k: (v[:80] if isinstance(v, str) else v)
+                    for k, v in result.items()
+                    if v is None or isinstance(v, (bool, int, float, str))
+                }
+            return result
+        return traced
+
+    def describe(self, path=None):
+        # Copies first: an index_folder call may be writing its entry from the
+        # watcher's worker thread while this runs on the loop thread.
+        batches, calls = list(self.batches[-8:]), [dict(c) for c in list(self.calls[-8:])]
+        lines = [f"trace at {self._now()}s: {len(self.batches)} change batch(es), "
+                 f"{self.empty} empty (last at {self.last_empty}s), {len(self.calls)} index_folder call(s)"]
+        if path is not None:
+            try:
+                st = os.stat(path)
+                head = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+                lines.append(f"on disk {self._rel(path)}: mtime_ns={st.st_mtime_ns} first_line={head}")
+            except OSError as error:
+                lines.append(f"on disk {self._rel(path)}: {type(error).__name__}")
+        lines += [f"  batch @{t}s {changes[:8]}" for t, changes in batches]
+        lines += [f"  index_folder {call}" for call in calls]
+        return "\n".join(lines)
+
+
+def test_watch_trace_names_what_the_watcher_saw_and_did(tmp_path):
+    """The timeout message must be able to tell a missed event from an empty reindex."""
+    from collections import namedtuple
+
+    root = tmp_path / "project"
+    root.mkdir()
+    code = root / "code.py"
+    code.write_text("def seen(): pass\n", encoding="utf-8")
+    trace = _WatchTrace(root)
+    modified = namedtuple("Change", "name")("modified")
+    inner_closed = []
+
+    async def fake_awatch(*paths, **kwargs):
+        try:
+            yield set()
+            yield {(modified, str(code))}
+            yield {(modified, str(code))}
+        finally:
+            inner_closed.append(True)
+
+    async def take_two():
+        stream = trace.wrap_awatch(fake_awatch)(str(root))
+        got = [await stream.__anext__(), await stream.__anext__()]
+        await stream.aclose()
+        # Checked here, not after asyncio.run: its shutdown finalises every
+        # open async generator and would close the inner stream anyway.
+        closed_at_aclose = list(inner_closed)
+        return got, closed_at_aclose
+
+    got, closed_at_aclose = asyncio.run(take_two())
+    assert len(got) == 2
+    assert closed_at_aclose == [True], "closing the traced stream must close the watcher's stream"
+
+    # The producer's shape: `WatcherChange(change_type, path, old_hash)`.
+    WatcherChange = namedtuple("WatcherChange", "change_type path old_hash")
+    seen_while_running = []
+
+    def fast_exit(**kw):
+        seen_while_running.append(trace.describe())
+        return {"success": True, "changed": 0, "fast_path": True, "message": "No changes detected", "files": [1]}
+
+    trace.wrap_index_folder(fast_exit)(
+        path=str(root), changed_paths=[WatcherChange("modified", str(code), "abc")]
+    )
+    assert "'end'" not in seen_while_running[0], "a call still running must show no end"
+
+    def boom(**kw):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        trace.wrap_index_folder(boom)(path=str(root), changed_paths=None)
+
+    text = trace.describe(code)
+    assert "1 change batch(es), 1 empty" in text
+    assert "modified:code.py" in text
+    assert "'changed_paths': ['modified:code.py:abc']" in text
+    assert "'fast_path': True" in text and "'message': 'No changes detected'" in text
+    assert "'files'" not in text
+    finished = next(line for line in text.splitlines() if "'fast_path': True" in line)
+    assert "'end':" in finished, "a finished call must show its end"
+    assert "'raised': 'RuntimeError'" in text
+    assert "2 index_folder call(s)" in text
+    assert "on disk code.py: mtime_ns=" in text and "first_line=['def seen(): pass']" in text
+
+    code.unlink()
+    assert "on disk code.py: FileNotFoundError" in trace.describe(code)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("polling", [False, True], ids=["native", "polling"])
 @pytest.mark.parametrize("operation", ["initial", "delete", "rename", "new_tree", "replace", "hidden", "live_tree", "root_replace", "move_out", "move_out_all"])
@@ -201,7 +361,9 @@ async def test_registration_race_updates_persisted_symbols(tmp_path, monkeypatch
     before = symbols()
     assert ("before_arm", target_rel) in before
     assert ("hidden_before", hidden_rel) in before
-    native_awatch = watchfiles.awatch
+    trace = _WatchTrace(root)
+    native_awatch = trace.wrap_awatch(watchfiles.awatch)
+    monkeypatch.setattr(watcher, "index_folder", trace.wrap_index_folder(watcher.index_folder))
     attempts, closed = [], []
 
     async def race(*paths, **kwargs):
@@ -248,7 +410,7 @@ async def test_registration_race_updates_persisted_symbols(tmp_path, monkeypatch
         except asyncio.TimeoutError as error:
             raise AssertionError(
                 f"Timed out waiting for {(symbol, file)} present={present}; "
-                f"persisted={symbols()}; arms={attempts}"
+                f"persisted={symbols()}; arms={attempts}\n{trace.describe(root / file)}"
             ) from error
         return symbols()
 
@@ -420,6 +582,8 @@ async def test_unknown_deletion_burst_keeps_fast_path_until_an_indexed_tree_is_g
 @pytest.mark.parametrize("layout", ["git_subdir", "git_root", "local"])
 async def test_subdirectory_watch_reconciles_against_index_root_keys(tmp_path, monkeypatch, layout, polling):
     pytest.importorskip("watchfiles")
+    import watchfiles
+
     monkeypatch.setenv("WATCHFILES_FORCE_POLLING", "true" if polling else "false")
     root = tmp_path / "repo"
     foo = root / "packages" / "foo"
@@ -445,6 +609,9 @@ async def test_subdirectory_watch_reconciles_against_index_root_keys(tmp_path, m
         return _persisted_symbols(database)
 
     assert ("before_watch", "packages/foo/code.py") in symbols()
+    trace = _WatchTrace(root)
+    monkeypatch.setattr(watchfiles, "awatch", trace.wrap_awatch(watchfiles.awatch))
+    monkeypatch.setattr(watcher, "index_folder", trace.wrap_index_folder(watcher.index_folder))
     task = asyncio.create_task(watcher._watch_single(
         str(watched), 200, False, storage, None, False,
         skip_initial_index=True, quiet=True, context_providers=False,
@@ -462,6 +629,7 @@ async def test_subdirectory_watch_reconciles_against_index_root_keys(tmp_path, m
         except asyncio.TimeoutError as error:
             raise AssertionError(
                 f"Timed out waiting for {(symbol, file)} present={present}; persisted={symbols()}"
+                f"\n{trace.describe(root / file)}"
             ) from error
         return symbols()
 

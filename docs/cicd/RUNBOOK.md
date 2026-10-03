@@ -44,6 +44,23 @@ to whoever owns that login.
 `dry_run=true` (the default until the first real publish) stops before any
 upload, tag, release or registry write and smokes the built wheel instead.
 
+⚠⚠ **The release cadence (STANDARD N8, `release.unreleased_max_hours`).** Once
+`main`'s `[Unreleased]` block has waited past the Floor, every PR's
+`fast: harness fast tier` fails, and so does every local commit. The release
+PR itself passes: its tree empties the block under a new version heading.
+`main.yml`, `nightly.yml` and `release.yml` never evaluate it, so `main`
+stays green and `/release` will cut. The escape paths:
+- A fix `main` needs before the release: put it IN the release PR, or cut the
+  release first and merge the fix after. Nothing else unblocks it short of
+  §6.
+- A contributor PR failing only this row did nothing wrong. Say so on the
+  thread; it passes once its branch is UPDATED after the release merges. A
+  re-run reuses the old test merge, whose first parent is the pre-release
+  `main`, so the row stays red.
+- A local refusal while `main` is already released: `git fetch`. The gate
+  reads the upstream remote's `main` as last fetched, and its line names the
+  fetch age.
+
 ⚠ Never push a `v*` tag by hand. The workflow refuses it and says so.
 ⚠ Never run `twine upload` locally again. After the first pipeline publish,
 revoke the `~/.pypirc` token on PyPI (Account settings → API tokens) and
@@ -63,8 +80,10 @@ uvx --from twine twine upload dist-ci\jcodemunch_mcp-X.Y.Z*
 
 then the post-publish smoke from PyPI in a fresh venv
 (`scripts\handshake.py --expect-version X.Y.Z --command <venv>\Scripts\jcodemunch-mcp.exe --fixture testsixtures\pkg_smoke`),
-`gh release create vX.Y.Z dist-ci\* --title ... --notes-file ...` with the
-notes rendered from the CHANGELOG block, and the registry line from
+`gh release create vX.Y.Z dist-ci\* --title ... --notes-file notes.md` with the
+notes rendered by `python scripts\release_notes.py X.Y.Z <tool_count> > notes.md`
+(never the block pasted by hand: GitHub refuses a body over 125,000
+characters, and 1.108.320's block alone was 335,730; LEDGER L-92), and the registry line from
 CLAUDE.md. The publisher is listed on PyPI since 2026-09-11 (FINDINGS C-15);
 the next dispatched run is the proof; if it is refused again, re-enter
 the form before each release. When `release: pypi` passes once, this
@@ -101,7 +120,7 @@ PyPI has the version and cannot be re-uploaded. Do not yank from a script.
 
    ```
    uv venv %TEMP%\pp --python 3.12
-   uv pip install --python %TEMP%\pp\Scripts\python.exe jcodemunch-mcp==X.Y.Z
+   uv pip install --python %TEMP%\pp\Scripts\python.exe --refresh-package jcodemunch-mcp jcodemunch-mcp==X.Y.Z
    %TEMP%\pp\Scripts\python.exe scripts\handshake.py --expect-version X.Y.Z --command %TEMP%\pp\Scripts\jcodemunch-mcp.exe --fixture tests\fixtures\pkg_smoke --expect-languages python,typescript,javascript,go
    ```
 
@@ -127,9 +146,12 @@ PyPI has the version and cannot be re-uploaded. Do not yank from a script.
   the install still fails. On 1.108.319 the job's own probe did exactly that and
   skipped the GitHub release and the registry publish. **The only reliable
   readiness signal for an install is the install.**
-  ⚠ If a re-run keeps failing, `uv pip install "jcodemunch-mcp==X.Y.Z"` in a
-  scratch venv is the same question asked by hand; a 404 from the JSON API is
-  evidence of nothing either way.
+  ⚠ If a re-run keeps failing, `uv pip install --refresh-package jcodemunch-mcp
+  "jcodemunch-mcp==X.Y.Z"` in a scratch venv is the same question asked by
+  hand; a 404 from the JSON API is evidence of nothing either way. ⚠ Without
+  `--refresh-package`, `uv` answers from the index page it cached on the first
+  ask, and both indexes send `max-age=600`: one ask before propagation is ten
+  minutes of the same "no such version" (LEDGER L-93).
 - **Test PyPI down**: `release: test pypi` fails; re-dispatch later. There is
   no skip switch by design.
 

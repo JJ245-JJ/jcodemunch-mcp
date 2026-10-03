@@ -556,7 +556,31 @@ INDEX_VERSION = 17
 #   template in a file (`std::hash<A>`, `std::hash<B>`) are `std.hash~1`/`~2`;
 #   `A::B#class` for `class ::A::B` becomes `A.B#class`; an existing id can
 #   gain a `~N` when a moved type now shares its name.
-PARSER_GENERATION = 8
+#
+#   ⚠⚠ **And L-52: a C++ header of namespaced declarations is read as C++.**
+#   MOVES: in such a `.h`, `n#function` and bare `f#function` rows from the
+#   C misparse become `n.f#function`, `n.A#class` and `n.A.f#method`.
+#
+#   ⚠⚠ **And L-54: a C++ template specialisation keeps its arguments.**
+#   MOVES: `hash#type~1`/`~2` for `hash<A>`/`hash<B>` become `hash<A>#type`
+#   and `hash<B>#type`, their members follow, and ids numbered only because
+#   specialisations shared a bare name lose the `~N`. This SUPERSEDES the
+#   L-46 lines above for specialisations: against v1.108.319, an out-of-line
+#   `std::hash<A>` goes from `hash<A>` to `std.hash<A>`, and `A::B<int>`
+#   from `B<int>` to `A.B<int>`. An out-of-line body in a file without its
+#   class keeps the arguments too (`hash<A>.h`, no parent); a member
+#   specialised under `template <>` (`FloatingPoint<float>::Max`) is
+#   `FloatingPoint<float>.Max` owned by the primary.
+#
+# 9 (#876): a Python dynamic import is an import EDGE. `__import__("x")` and
+#   `importlib.import_module("x")` with a literal target, or a literal passed
+#   one step into a parameter that feeds one, gain an edge to `x`; a target
+#   still not a literal is recorded as a `dynamic_unresolved` marker edge,
+#   with its scope, which `blast_verdict` reads: a scope reaching the file
+#   refuses an empty walk, an opaque one is disclosed. ⚠⚠ No symbol id
+#   moves; only `files.imports` changes, on UNCHANGED content, so an existing
+#   index gains the edges only by a re-parse (Standing lesson 08-05).
+PARSER_GENERATION = 9
 
 
 @dataclass(frozen=True)

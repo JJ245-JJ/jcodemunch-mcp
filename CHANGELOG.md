@@ -2,6 +2,790 @@
 
 ## [Unreleased]
 
+### Fixed - a call spelled with a Unicode escape is a call (LEDGER L-86)
+
+Java translates Unicode escapes before it reads a single token, so a call
+written with the escape for `f` followed by `ile()` is a call to `file()`.
+C# accepts the same escape inside an identifier, and an eight-digit form too.
+JavaScript and TypeScript accept a braced form. `check_references` compared
+the raw line, so it never saw that call. `check_delete_safe` reads that search
+for its "no reference" evidence. With no import edge between the files, which
+is the ordinary case in one Java package or one JS file, it graded the called
+function `safe_to_delete` at confidence 1.0.
+
+The reference search now decodes escapes before it compares, in the one place
+LEDGER L-84 already folds spellings. That covers the repeated-`u` form Java
+allows, hex digits in either case, the braced form, and an astral character
+spelled as two escaped surrogates. When `javac` and `node` are on PATH, the
+test compiles and runs the Java and JavaScript fixtures first, so those
+spellings are proven to call the function they are counted against. The C#
+forms rest on the language specification. Decoding cannot drop a call:
+wherever an escape can stand before a call, it is one. It can drop a textual
+mention whose letters sit inside an escape's hex digits, such as a Windows
+path segment. An escape of a different letter still names a different
+identifier and does not match.
+
+## [1.108.320] - 2026-09-30 - a member the index never saw and a caller the search never found both read as nothing there
+
+A symbol the index never recorded and a caller the reference search never found
+both answer "nothing is there", and the delete preflight read either one as
+proof. This release closes both. Class members and class state are indexed and
+owned in the languages that dropped them: Java, Kotlin, Go, Rust, Dart, Ruby,
+PHP, Python, JavaScript and TypeScript, C and C++, Pascal, F#, Nim, Zig, Swift
+and others, and Haskell, which extracted nothing at all (#713-#858). The safety
+preflights stopped certifying an absence their search could not see: a dynamic
+import that can load the file (#876, L-70, L-73, L-75), a name no call site
+writes (#714, L-80, L-81), a call written in another Unicode spelling or hidden
+behind a differently-cased sibling (L-84, L-88), and a page of test mentions
+that pushed the real caller out of view (L-89).
+
+### Fixed - a differently-cased sibling no longer hides a caller (LEDGER L-88)
+
+`check_references` leaves the definition's own lines out of its content
+search, so a declaration is not counted as a use of itself (#406). It picked
+those lines by matching every symbol's name to the identifier
+case-insensitively. In a case-sensitive language that names a different
+symbol: Java `File()` beside `file()` is two methods, and the call to `file()`
+inside `File()`'s body was skipped as `file`'s own definition.
+`check_delete_safe` then graded the used `file` `safe_to_delete` at confidence
+1.0.
+
+The exclusion now matches the declared spelling exactly, case included. An
+exclusion removes matches, so it must never be wider than the definition it
+stands for, the rule L-84 set for Unicode spellings. In a case-insensitive
+language, exact case errs toward counting a differently-cased declaration as
+a reference, which blocks a delete and never licenses one; the same false
+positive means the post-task diagnostic stops listing an unused `load` beside
+`Load` as unreferenced, and the reuse audit reads it as live. Measured on this
+repository's index: of the 359 names that share a lowercase form with another
+spelling, every one gains the sibling's lines, and none changes between
+referenced and unreferenced or loses a line.
+
+### Fixed - a page of test mentions no longer hides a real caller from `check_delete_safe` (LEDGER L-89)
+
+`check_delete_safe` asked `check_references` for at most 20 files and built
+its verdict from that page alone. Twenty test files that merely mention the
+name, in a comment, pushed the one real caller off the page, and a used
+function graded `test_coverage_only`. This is #559's shape: a count taken
+after the page is cut describes the page. It predates L-84, which added a new
+way to fill the page (a name's compatibility spelling in prose), and the L-84
+review found it.
+
+The preflight now reads every file. It calls the same search the public tool
+uses, without the tool's page cap, which costs at most one full scan, the
+cost a search that finds nothing already pays. Measured on this repository's
+own index (cross-repo on, as by default), the median of five went from 12,826
+to 13,566 ms for `resolve_repo`, a widely referenced symbol, and from 13,476
+to 13,573 ms for `build_stop_rule`.
+
+### Fixed - `check_references` finds a call written in another spelling of the name (LEDGER L-84)
+
+Python normalises identifiers to NFKC, so `def file()` called as `ﬁle()`
+(the fi ligature) is one function called once. `check_references` tested
+whether the identifier's bytes appeared in a line, so it never saw that call,
+and `check_delete_safe`, which reads it for its no-reference evidence, graded
+the used function `safe_to_delete` at confidence 1.0. The name gate could not
+catch it, because `file` is a plain ASCII identifier. The same held for a
+decomposed accent, a fullwidth letter or a mathematical-bold letter on either
+side, and for an import written in another spelling.
+
+`check_references` now compares NFKC-folded text on both sides of a line match
+and an import match, for every language: a found reference only ever blocks a
+delete, and the search already over-matches on purpose (substring,
+case-insensitive). The exclusion of the definition's own lines is NOT folded.
+Review found that folding it removes matches: in Java, `ﬁle()` and `file()`
+are two methods, and a folded exclusion skipped the body of `ﬁle` as `file`'s
+definition, losing the call inside it and grading the used method
+`safe_to_delete` at 1.0 where main blocked. ASCII text skips the
+normalisation, since NFKC changes nothing there. Measured with a scratch script
+on this repository's own index, the median over five runs went from 524 to 534
+ms for a name that appears nowhere and from 247 to 272 ms for `verdict`.
+
+### Fixed - `name_not_searchable` names the re-index and the loaders that could move it (LEDGER L-81)
+
+`check_delete_safe` runs three gates over an absence verdict: the name gate
+(#714), then the dynamic-import gate (L-70), then the corpus gate (#566). The
+later two fired only on the plain absence verdicts, so a symbol the name gate
+had already moved to `name_not_searchable` skipped both. On a stale index its
+`stop_rule.would_change_verdict` named reading the call sites and left out
+"re-index this repo", which the corpus gate's own comment says is the gap that
+could change the answer, and the blocker list dropped the corpus blocker.
+
+Both gates now run on `name_not_searchable` too. The verdict keeps its name,
+because the name gate is the narrower cause, the same rule the corpus gate
+already applies to `dynamic_import_boundary`, and it gains the other gates'
+blockers and gaps. Both halves are reachable on a real repo: a C# operator on a
+stale index, and a Python function with a non-ASCII name (`def café()`) in a
+package that loads its modules by computed name. The name predicate is
+ASCII-only, so it refuses `café` though a call site writes it; that is LEDGER
+L-83, and it fails toward a refusal, never a deletion.
+
+### Fixed - `check_delete_safe` no longer tells an agent to stop checking on an unsearchable name (LEDGER L-80)
+
+`name_not_searchable` (#714) is the verdict for a symbol no call site names:
+a C# operator is invoked as `a + b`, so "no reference found" proves nothing.
+The tool built the gap that says what would settle it ("read the call sites by
+hand") and never passed it to the stop rule. With cross-repo on, runtime on
+and traces ingested, no other channel was open, and the verdict came back
+`stop_rule.terminal: true`, an instruction to stop checking before a delete
+the tool's own docstring calls unproven. #714's test asserted the opposite
+and passed only because no traces were ingested, so the runtime channel
+stayed open; the fixture could not reach the failing shape.
+
+The fix is in the stop rule, not only at the call site. `_stop_rule._UNSETTLED`
+names the verdicts whose meaning is that an absence could not be established
+(`corpus_inadequate`, `name_not_searchable` and `dynamic_import_boundary` for
+`check_delete_safe`; `dynamic_import_boundary` for `check_edit_safe`), and
+those are never terminal, whichever gaps the caller passed. A caller that
+forgets its gap now loses the specific action, which falls back to "review
+manually", and never the verdict's meaning. `check_delete_safe` also passes
+the name gap, so the action it names is reading the call sites.
+
+### Fixed - the safety preflights' descriptions name every verdict they return (LEDGER L-79)
+
+`check_delete_safe` and `check_edit_safe` list their verdicts in the tool
+description, and the list stopped growing when the verdicts did. Four of
+`check_delete_safe`'s and one of `check_edit_safe`'s were classified in
+`_stop_rule.py`, returned to callers, and absent from the description a caller
+reads first: `scip_referenced`, `corpus_inadequate` (#566), `name_not_searchable`
+(#714) and `dynamic_import_boundary` (L-70, L-75). The LEDGER row named three;
+the ratchet found `scip_referenced` too, missing since v1.108.120.
+
+Nothing bound the prose to the verdicts. `test_stop_rule` binds the verdicts a
+tool assigns to `known_verdicts`, and
+`tests/test_preflight_descriptions_name_every_verdict.py` now binds
+`known_verdicts` to the published description in both directions, so a tier
+added or retired fails until the description says so. The descriptions grow
+by 23 tokens under `standard` and `full`; `core` and `counter` do not carry
+these tools and did not move (`benchmarks/schema_baseline.json`, re-pinned in
+`harness/corpora.json`).
+
+### Fixed - `check_edit_safe` does not certify an edit past a dynamic import (LEDGER L-75)
+
+`check_edit_safe` answers "what breaks if I change this" from `find_importers`'
+list, and it did not read #876's dynamic-import boundary. So a function in a
+module `import_module(f"adapters.{name}")` can load graded `safe_to_edit`,
+"no external callers", while the loader calls into it at runtime. L-70 and
+L-73 had closed the same gap in the delete preflight and the importer list.
+
+It now reads the `dynamic_import_boundary` block `find_importers` returns (one
+reach rule, `tools/_dynamic_boundary.py`). A function that would have graded
+`safe_to_edit` grades the bounded verdict `dynamic_import_boundary` instead.
+Its confidence is capped at the unproven ceiling and never reads safer than
+`untested`, and it names the loaders, saying how many a capped list left
+out. The loader is a gap in `stop_rule`, so the verdict is never terminal.
+`untested` rests on the same "no external caller" claim, because
+`signature_impact` outranks it, so it keeps its name and is never terminal
+past a loader either. `complexity_risk`, `signature_impact` and
+`runtime_critical` rest on positive evidence and keep their names, gaining
+the loader as a blocker; `signals.dynamic_loader_count` survives the top-5
+blocker cut. An opaque site blocks nothing (#876).
+
+Measured on this repository (`l75-measure.txt`, one index, main's source and
+this branch's, every function and method in a file a scoped site reaches):
+167 of 392 moved from `safe_to_edit` to `dynamic_import_boundary`, and no other
+verdict moved. The reached files are the encoder schemas
+`encoding/schemas/registry.py` loads by package, the context providers and
+the competitive adapters, each named by the loader that reaches it. The tool
+description's verdict list is unchanged, as `check_delete_safe`'s was for
+its three bounded verdicts; that drift is LEDGER L-79.
+
+### Fixed - `find_importers` names the dynamic import that can load a file (LEDGER L-73)
+
+L-70 made every absence tool read #876's dynamic-import boundary, and
+`find_importers` was left out. For a module `import_module(f"adapters.{name}")`
+can load, it answered `importer_count: 0` with nothing beside it. That reads as
+"nothing imports this", one call away from `get_blast_radius` refusing to say
+so over the same file.
+
+A package- or prefix-scoped site that can reach the file is now named in a
+`dynamic_import_boundary` block (`files`, capped, beside `files_total`, and a `note`),
+in singular and batch mode, whatever the static count. The loaders are not
+importers and are never counted in `importer_count`: the module is named at
+runtime. An opaque site is disclosed as `dynamic_imports_unfollowed` only beside
+an EMPTY answer that no scoped site already qualifies, exactly the rule
+`get_blast_radius` applies (#876); a batch names it once. Both are declared in the compact encoder, which drops an undeclared dict
+without a word.
+
+⚠⚠ The deletion investigator was the consumer that acted on the missing
+field. Its liveness split calls an importer file with `importer_count: 0`
+unreachable, so a helper imported only by a dynamically loaded module was
+offered for deletion as part of a dead cluster (`static_clear`). A loadable
+importer is live now, and that verdict is `unsafe`. `check_edit_safe` reads the
+same importer list for signature impact and does not read the boundary yet;
+that verdict change needs its own measurement and is LEDGER L-75.
+
+### Fixed - the dead-code tools read the dynamic-import boundary the blast radius reads (LEDGER L-70)
+
+#876 records a Python dynamic import it cannot resolve as a site with a
+scope, and only `get_blast_radius` read the site. The other three absence
+tools got #876's edges and not its boundary. So a module that
+`import_module(f"adapters.{name}")` can load was "an empty result here is NOT
+evidence" in the blast radius, and at the same time `find_dead_code`
+published it `zero_importers` at confidence 1.0, the value this project
+documents as provably unreachable. `check_delete_safe` certified its
+symbols `safe_to_delete`.
+
+The reach rule now lives in one place, `tools/_dynamic_boundary.py`, and
+every absence tool reads it:
+- `find_dead_code` caps a file a package- or prefix-scoped site can reach at
+  the unproven ceiling, beside `uncapped_confidence`, with
+  `dynamic_import_boundary` in `confidence_capped_by` and the sites named in
+  `dynamic_import_sites`. At the default threshold the file is withheld and
+  counted in `dynamic_import_boundary_withheld`, never silently dropped.
+- `get_dead_code_v2` records `unreachable_file` as UNDECIDED for such a file
+  and for everything it imports (`undecided_signals` on the row,
+  `signal_diagnostics.undecided`, and a `dynamic_import_boundary` block naming
+  the loaders). Its other two signals still vote, and signal 1's fire rate is
+  measured only over the symbols it could be decided for. ⚠⚠ The first draft
+  made those files entry points instead. An entry point is skipped whole, so
+  `no_callers` went silent with it, and a loader at the repo root reaches
+  every file: nothing was analysed, no `signal_warning` was raised, and
+  `get_repo_health` published a grade that main withholds. Counting the
+  undecided symbols as "did not fire" is the same error one step removed: it
+  pulls a constant signal into the informative band and hands it a vote on
+  every unrelated symbol.
+- `check_delete_safe` returns the new bounded verdict
+  `dynamic_import_boundary`, naming the loaders. Like `corpus_inadequate` and
+  `name_not_searchable`, it replaces only an absence verdict; a found
+  importer still blocks. The loader is a gap in `stop_rule`, so the verdict
+  is never terminal, and a thin corpus still adds its own blocker beside it.
+- The deletion investigator gains a `no_dynamic_loader` obligation, left
+  unestablished when a site reaches the file, so it answers
+  `not_established` there instead of `static_clear`.
+- An opaque site (a name computed from data) caps nothing and is disclosed
+  as `dynamic_imports_unfollowed`, per the #876 ruling.
+
+Measured on this repository (`l70-measure.txt`, one index, main's source and
+this branch's): the default `find_dead_code` still returns no dead files on
+either side, because the corpus is already capped (`withheld_files`,
+`runtime_discovery_unresolved`) below the default threshold. It now carries
+`dynamic_imports_unfollowed`, naming 4 files. `get_dead_code_v2` leaves
+`unreachable_file` undecided for 165 symbols in the twelve competitive
+adapters, which one test file loads by prefix, and returns 100 matches where
+main returned 144.
+
+### Fixed - a dynamic import is an import edge when its target is a literal, and a named boundary when not (#876)
+
+Reported by @Torolosko (split from #718). The static model stopped at a
+dynamic dispatch and said nothing. `_passthrough("run_g_gates", rest)`
+fed `__import__(module_name)`, and an impact query on `run_g_gates.main`
+came back empty although a real consumer reaches it. An empty result
+there read as "nothing depends on this".
+
+Fixed at the import authority (`parser/imports.py`), so every graph
+consumer inherits it:
+- A literal target (`__import__("x")`, `importlib.import_module("x")`) is
+  an import edge.
+- A literal passed one step into a parameter that feeds one, by position
+  or keyword (a method's `self`/`cls` skipped), is an edge. That covers the
+  reported case; it is the issue's bounded "one-step finite literal
+  propagation", not symbolic execution. It holds only while the parameter
+  is never rebound in the function (`name = "plugins." + name` would
+  otherwise yield a wrong edge to `foo`), and only when every use of the
+  function in the file is a direct call: one passed to `map`, registered
+  or called on another object can receive anything, and is a site.
+- A subscript into a module-level literal table (`GRAMMARS[name][1]`) is
+  the table's values along that path, never its keys. The table must hold
+  only constants and tuples below its top level (a list or dict inside it
+  can be changed through any value read out of it), and nothing may change
+  the table itself: `T[k] = cfg`, `T.update(...)`, an alias or handing it
+  to a function makes it a site; `k in T`, `sorted(T)` and `T.get(k)` are
+  reads.
+- A loop variable over a literal sequence (`for m in ("a", "b")`) is each
+  of its strings, when every binding of that name is such a loop; a
+  comprehension's variable is local to it and counts unless the
+  comprehension binds the name again.
+- Anything else is a recorded site with a scope: `package` (built from
+  the package's own name, the #569 self-enumeration shape, including the
+  relative spelling `import_module(f".{m.name}", __package__)`), `prefix:<m>`
+  (a literal module prefix like `f"adapters.{name}"`, or `X.__name__` of
+  an imported module), or `opaque` (a name computed from data). A public
+  loader function is also `opaque`, since another file can call it with
+  anything.
+
+`get_blast_radius.blast_verdict` refuses an empty walk of a Python file
+with `dynamic_import_boundary`, naming the sites (capped at 10, with
+`files_total`), only when a site's scope reaches that file. An opaque
+site is disclosed beside the empty result as `dynamic_imports_unfollowed`,
+in the response body so the default `meta_fields: []` does not strip it,
+and does not flip it (jjg's ruling, 2026-09-29): most repositories have a
+registry- or config-driven loader, and a refusal that fires on every empty
+result teaches people to ignore it. The review measured the first draft
+refusing every empty Python blast radius on this repository. Measured over
+its 1,101 tracked Python files (`dynamic-sites.txt`), 9 files hold an unresolved
+dynamic import. An ordinary module such as `tools/find_dead_code.py` now
+gets no refusal and 4 disclosed opaque sites. An `encoding/schemas/`
+module, which those loaders really do import, is refused by 3 scoped
+sites. A file that does not parse yields no edges and no site.
+
+`PARSER_GENERATION` 8 -> 9: the new edges change `files.imports` on
+unchanged content, so an existing index re-parses once on upgrade to gain
+them. No symbol id moves. Subprocess launches, config-driven dispatch and a
+function reached through a string lookup (`globals()["_load"](cfg)`) are
+not visible to the AST and are not covered. A public module-level table is
+trusted though another file could add to it, unlike a public loader
+function, which is a site. That asymmetry is by design (jjg,
+2026-09-29; LEDGER L-71). `find_dead_code` and
+`check_delete_safe` read the new edges but not the boundary: LEDGER L-70.
+The marker names no package, so no cross-repo package match reads it.
+
+### Fixed - `config --check` and `init` say when the installed agent policy is not the one this version writes (#871)
+
+A correction to the agent policy that `init` installs never reached an
+existing install. `install_claude_md` returned "policy already present"
+and wrote nothing whenever the file held the policy's heading, and
+`config --check` compared only which TOOLS a CLAUDE.md names, not its
+wording. So #719's fix, which changes what every agent is told about
+proving absence, reached new installs only, and nothing told an existing
+one its text was out of date. It is the freeze `surface_offer.py` names
+for `tool_surface`: a value written once that no upgrade reaches. Found
+while fixing #719.
+
+`config --check` now compares the installed `## Code Exploration Policy`
+block with the policy this version would install for the same config
+(`cli.policy.installed_policy_drift`). When they differ, it says so and
+counts the differing lines. It names `jcodemunch-mcp claude-md --generate
+--format policy`, a new format that prints exactly that text. The existing
+`full` format prints a different snippet on the `full` surface, and
+replacing a block with it would make the drift permanent (review). It
+also says it cannot tell an outdated block from one its owner edited on
+purpose, so the difference is a warning and never an issue: it does not
+change `config --check`'s exit status, which clients read as a broken
+install. `init` adds the same note to "policy already present". Both are
+messages only; neither rewrites the file, which is the `surface_offer`
+rule. The block runs from the heading, matched as `init` matches it and
+through the one constant both now share, to the first `## ` heading that
+is not one of the policy's own sections. So a user's sections after it
+are never compared, and trailing whitespace and blank lines are not a
+difference.
+
+### Fixed - runtime evidence says which body it observed (#875)
+
+Reported by @Torolosko (split from #718). Runtime evidence is cumulative
+and keyed by `symbol_id`, which survives a body edit while the symbol's
+`content_hash` changes. So a trace that observed `X` before its body was
+rewritten kept counting as evidence that the rewritten `X` runs, and
+`_runtime_confidence: confirmed` could not tell the two apart.
+
+Each `runtime_calls` row now records what it last observed: the mapped
+symbol's `content_hash` in the index at ingest time, the index's
+`git_head`, and the `ingest_id` of the run, which each ingest also
+returns. The hash is recorded only when the symbol's file on disk still
+has the mtime the index read. A file edited since it was indexed holds a
+body the index never saw, and recording the index's hash there would
+certify the wrong body (review). A `confirmed` entry carries
+`_runtime_body`:
+- `current` when the latest trace was ingested while the index held the
+  body it holds now;
+- `earlier` when that body has since been rewritten;
+- `unknown` when nothing comparable was recorded: a row written before
+  this change, or a file edited since it was indexed. UNKNOWN is never
+  `current`.
+
+`_meta.runtime_freshness.body` counts the three, and `body_basis:
+"index_body_at_ingest"` names the comparison. It is not a digest of the
+code the trace ran. A trace captured before an edit and ingested after
+the re-index reads `current`, and nothing at ingest time can see that
+case. `get_blast_radius` builds its own `runtime_freshness` from several
+lists; it now counts `body` through the same helper, and it had dropped
+the counts (review). The file-keyed stamp (`find_references`,
+`find_importers`) has no single body to compare and still reports
+`confirmed` from any trace. `git_head` is recorded for provenance and has
+no reader yet. The count stays
+cumulative, so the history the report called useful is kept; the new
+field says which body the latest trace saw.
+
+The three ingest paths (`otel`, `sql_log`, `stack_log`) each carried a copy
+of the same upsert. They now call `runtime/_calls_store.upsert_calls`, and
+a test fails on any other write into `runtime_calls` under `src/`, in any
+spelling (`INSERT OR REPLACE`, `REPLACE INTO`, a line break), so a
+fourth writer cannot record rows with no provenance. The columns are
+added at ingest to a table that predates them, with no INDEX_VERSION bump,
+following the diagnostics snapshot's rule. The other readers of
+`runtime_calls` (`find_unused_paths`, `check_delete_safe`,
+`get_pr_risk_profile`) keep reading the cumulative history, which for
+a deletion or dead-code answer errs toward "it ran".
+
+### Fixed - `get_changed_symbols` names the changed files it did not symbol-diff (#874)
+
+Reported by @Torolosko (split from #718). `changed_files` matched git
+exactly, 14 of 14, while a changed JSONL evidence file produced no symbol
+delta and nothing said why. A file with no detected language was skipped
+with `continue`, so "no changed symbols" could mean the change touched no
+symbol or that the file was never parsed.
+
+That was one of three ways a changed file went undiffed in silence. A
+parser that raised was caught and returned `{}`, the same answer as a file
+with no symbols. A non-ASCII path came back from `git diff --name-only`
+C-quoted (`core.quotePath`). Every read of the quoted name then failed, so
+the file read as unchanged while `changed_files` published the quoted
+string (LEDGER L-64, found in #878's review).
+
+Every changed file is now either symbol-diffed or listed in
+`unparsed_changed_files` with its reason: `no_language`, `unreadable` or
+`parse_failed`. `parsed_changed_files_count` counts the rest, and
+`symbol_diff_complete` is true only when nothing was skipped. The diff is
+read with `--name-status -z`. The `-z` means a non-ASCII path is published
+and diffed under its real name. The status says which sides of a file
+exist, so a modified file whose old or new version could not be read (a
+`git show` timeout, for one) is `unreadable`. It is not diffed against
+nothing, which would publish every symbol as added or removed (review).
+`unparsed_changed_files` is uncapped: it is a subset of `changed_files`,
+itself uncapped, and on this repository over 300 commits it measured
+9,347 B beside `changed_files`' 29,952 B (725 files, 131 without a
+language; review measurement). Six other git path readers and one
+`git status --porcelain` read share the quoting defect, and each parses a
+different output shape. They are LEDGER L-65. The three tools that call
+`get_changed_symbols` and never read `symbol_diff_complete` are L-66.
+
+### Fixed - a scan whose absence is refused no longer calls itself strong evidence (#872)
+
+On an index committed past, `search_symbols` said two opposite things in
+one response. `_meta.verdict.note` read "Treat this as strong evidence the
+target is not present; do not reformulate the same query expecting a hit",
+beside `absence_citable: false` and `absence_blocked_by: "the index was
+stale at query time..."`. The prose told the agent not to search again in
+exactly the case a re-index would change the answer. The refusal is decided
+in the dispatcher, after `build_verdict` has written the `absent` note, and
+staleness and truncation refuse without downgrading the state, so the note
+survived. Found in review of #719's fix.
+
+When the dispatcher refuses an `absent` scan, the note now names the
+refusal and says to resolve it before treating the result as evidence
+(`handoff.refused_absence_note`). The state stays `absent`, so no consumer
+of `state` sees a change; moving staleness into `build_verdict` would
+change a published state, and is not done here. A scan that can prove
+absence keeps the proof note.
+
+The second path: a cached `absent` replayed after a commit is downgraded
+by `revalidate_verdict`, which set neither `state == "absent"` nor
+`absence_refused`, the two conditions the dispatcher attaches its refusal
+carrier on. With `meta_fields` unset, the response carried no
+`absence_blocked_by`; with `meta_fields: []`, the shipped default, it
+carried no `_meta` at all, in json or compact form. The downgrade now sets
+`absence_refused`, as `build_verdict` does for every refused zero-result
+scan, so the carrier arrives and names the cache replay. Review found a
+second downgrade with the same omission: a call with an ignored argument
+(`_arg_contract`) also turned `absent` into `degraded` with no flag, so
+its refusal never reached a default install either. Both now go through
+`retrieval.verdict.refuse_absence`, the one way to rewrite `absent` after
+`build_verdict`, and a ratchet over `src/` fails any other write of
+`degraded` into a verdict's state. The ignored-argument refusal is also
+named ("argument(s) this tool does not accept were ignored (...)") rather
+than the generic "only 'absent' can prove absence".
+
+### Fixed - `get_changed_symbols`' blast lists only importers that exist at `until_sha` (#878)
+
+`get_changed_symbols(include_blast_radius=True)` walks the INDEX's importer
+graph. #718 refused an EMPTY blast from a graph at another revision
+(`graph_not_at_until_sha`) and left a non-empty one alone, on the premise
+that a found importer is positive evidence. That holds only for a graph at
+`until_sha`. With the index built at a later commit, `until_sha=c1` listed
+`app/caller.py`, a file added in c2. With the index at an earlier commit,
+which is the tool's default mode, it listed an importer the diff itself
+deleted or renamed. Found in review of #718's fix.
+
+When the graph is not `until_sha`'s, the walk is re-run over the importers
+`git ls-tree` lists at `until_sha`. An importer absent there is dropped,
+and so is every importer reached only through it. The dropped files are
+published per changed file in `blast_dropped_absent_at_until`. A blast
+emptied that way refuses with `graph_not_at_until_sha`, as #718's empty
+blast does. An importer that exists at `until_sha` but gained its import
+later cannot be told apart by existence, so every non-empty blast from a
+graph at another revision names that revision in `blast_graph_sha`.
+
+The existence check reads index-root-relative paths, like #685's diff.
+`git ls-tree` has no `--relative` and is cwd-relative by default, so the
+#685 ratchet now fails an `ls-tree` argv holding `--full-name` or
+`--full-tree` instead of one missing `--relative`. The listing is read
+with `-z`, because `core.quotePath` otherwise C-quotes a non-ASCII path
+and a real importer such as `app/café.py` would be published as absent
+(review). When the tree cannot be listed, nothing is dropped and
+`blast_existence_unchecked` names the files, so an unfiltered list does
+not read as a filtered one that dropped nothing.
+`blast_dropped_absent_at_until` is uncapped, bounded by the walk it is
+taken from: each list is a subset of the unfiltered `blast_radius`
+(depth-limited by `max_blast_depth`), which is itself uncapped.
+
+### Fixed - a rename is not "safe" in files the import graph could not reach (#879)
+
+`get_blast_radius.blast_verdict` has been the one authority on an importer
+walk since #718, because an empty walk cannot tell "nothing depends on
+this" from "the graph cannot reach this": Go imports a PACKAGE, so the
+file-level graph lands on no member file (#415). Using it was opt-in, and
+four callers never did. `plan_refactoring`'s collision check answered
+`safe: True` from an empty walk, having checked only the defining file,
+while the file calling the symbol through a package import already defined
+the new name. Its rename, move, extract and signature plans listed no
+affected files with no sign the list was unmeasured. `get_pr_risk_profile`
+counted zero dependents for such a file in its blast signal. And
+`check_rename_safe`, the public tool for the same collision question,
+walks importers by hand and said `safe: True` the same way; it was not in
+the issue and was found while fixing it.
+
+Each asks `blast_verdict` when its walk comes back empty. A collision
+check that found no collision but could not reach the symbol's users
+answers `safe: None` with `unresolvable` naming the reason, in both
+`plan_refactoring`'s `collision_check` and `check_rename_safe`; a found
+collision is still `False` and a reachable clean walk still `True`. The
+four plans carry `affected_files_unresolvable`. The PR risk profile's
+`signal_breakdown.blast_radius` carries `unresolvable_files` and
+`score_is_lower_bound: true`, and the response carries
+`risk_score_is_lower_bound: true` beside the number it qualifies. When no
+changed code file's walk resolved and none found a dependent, the axis is
+not measured: its score is `None`, and `risk_score` and `risk_level` are
+withheld as `None` with `unmeasurable_axes: ["blast_radius"]`, because a
+0.0 there LOWERS the composite, the flattering direction (review). A
+changed code file the index has not seen, a new file, is probed by its
+package directory as if present: unchanged files cannot import a file
+before it exists, but they can import its package. An importer the diff
+ADDS can never count here, because the count excludes every changed file,
+so #718's `graph_gap` is not passed for that case. It does not cover an
+index that lags `base_ref`, where an unchanged file gained an import the
+graph never saw; that predates this fix and is LEDGER L-62. A walk that
+finds an importer is positive evidence and is never probed.
+
+Two tool descriptions change. `check_rename_safe`'s says `safe` may be
+null. `get_pr_risk_profile`'s promised "a single composite risk_score
+(0.0-1.0)" for CI gating, and a gate like jq's `.risk_score > 0.5` reads a
+null as a pass, so it now says the score is null with `unmeasurable_axes`
+when the blast axis could not be measured, and that a gate must treat null
+as a failure (review). Together: +61 tokens on the `standard` and `full`
+surfaces and 0 on `core` and `counter` (`benchmarks/schema_baseline.json`,
+regenerated; `schema-delta.txt`). A changed description is one full-rate
+cache write of the tool block for every client on those surfaces. The route-
+recall artifacts are regenerated with them: no recall figure moves, and
+the description-overlap leak diagnostic rises for one query in each
+corpus (its `leak_desc` 0.0 to 0.167 in the 59-query `results.json`, 0.125
+to 0.25 in the 44-query holdout; `mean_desc_overlap` 0.366 to 0.368 and
+0.292 to 0.295), because the new sentences share words with those queries. The regenerated baseline also absorbs +4 tokens on every
+surface that `main` had already drifted by before this change
+(`core_compact` 3967 committed, 3971 measured on `main`). The walk and
+its verdict now come as one call, `get_blast_radius.importers_with_verdict`,
+which `plan_refactoring` uses, so the next caller inherits the pairing.
+
+`tests/test_importer_walkers_ask_blast_verdict.py` also fails when a module
+walks the importer graph without asking, checked per FUNCTION with import
+aliases resolved (review planted a walk beside a helper that asked, and an aliased walker,
+past a module-level first draft). Five modules do today and are
+tracked as LEDGER L-59 (`find_dead_code`, `get_dead_code_v2`,
+`get_untested_symbols`, `get_call_hierarchy`, `get_impact_preview`); a sixth
+fails the test, and a module that starts asking must leave the list. It
+finds walkers by the names `_bfs_importers` and `_build_reverse_adjacency`,
+so the hand-rolled walks are named: `check_rename_safe` asks, and
+`get_file_risk._count_incoming` and `find_importers` are tracked in L-59.
+It checks calls, not control flow.
+
+That list is a gap ledger, and `scripts/gap_ledgers.py` required every gap
+entry to cite an OPEN issue. Since jjg's 2026-09-25 ruling a defect a
+session finds is a LEDGER row and never an issue, so an entry for one had
+nothing it could cite. An entry may now cite a `docs/workflows/LEDGER.md`
+row (`L-59`) under the same rule: the row must exist and read OPEN.
+
+### Fixed - a blast radius with importers only in another repository is not "absent" (#877)
+
+`get_blast_radius(cross_repo=True)` found a symbol's importers in another
+repository and, in the same response, published `_meta.verdict.state:
+"absent"` and `overall_risk_score: 0.0` beside `cross_repo_confirmed_count:
+1`. `absent` is the state an agent may cite as proof that nothing depends
+on a symbol (#719), and `0.0` reads as safe to change. The tool's own
+"answered nothing" test counted the cross-repo channel, so the importers
+kept the package probe from running; but the `result_count` handed to
+`blast_verdict` and the risk average both counted local importers only.
+`blast_verdict`'s contract already said `result_count` is what the caller
+found by every channel it ran.
+
+Both count the cross-repo channel now. It runs when a caller passes
+`cross_repo=True`, and also on every call that leaves it unset when
+`cross_repo_default` (`JCODEMUNCH_CROSS_REPO_DEFAULT`) is on, so those
+installs get the new verdict and score without passing anything. A
+cross-repo importer imports this repository's package directly, so it
+weighs in the risk average as a depth-1 dependent: importers found only
+elsewhere score 1.0, and a mix never scores LOWER than before, because
+every local weight is at most 1.0 (a depth-1 and a depth-2 local importer
+with one cross-repo importer: 0.8078 before, 0.8719 now). Two limits,
+stated: the channel matches the consumer's ROOT PACKAGE, one entry per
+consumer file, without checking that the file uses this symbol, so a
+consumer with many files importing the package pushes the score toward
+1.0; and `impact_by_depth` lists local files only, so the score can no
+longer be recomputed from that field alone (review). `importer_count`
+stays local, as its name says; the cross-repo figure is
+`cross_repo_confirmed_count` as before.
+
+Two consumers of that channel dropped it. `assemble_task_context` asks
+for it when called with `cross_repo=True`, and its blast entry reported
+`confirmed_count: 0` for exactly this case; it carries
+`cross_repo_confirmed_count` and `top_cross_repo` now.
+`get_endpoint_impact` inherits it under `cross_repo_default` and
+published only the local `affected_file_count`; it carries
+`cross_repo_affected_count` and `cross_repo_affected_files` now (review).
+The test pins all three tools, the mixed risk, and that `cross_repo=False`
+still answers `absent` for the same symbol.
+
+### Fixed - a latency Floor that fails on one preempted call is measured again before it fails (#906, #911)
+
+The bench tier gates four warm p95 latencies, each over 20 calls, so two
+calls preempted on a shared CI runner are the 95th percentile. Harness
+FINDINGS F-19 records ten occurrences (eleven FAIL values) before this
+week, and #906 and #911 made it twelve (thirteen): `get_file_outline` at
+69.5 ms against a 28 ms Floor on a
+docs-only commit, and `search_symbols` at 63.3 against 23, while the next
+`main` run on the same code passed. No Floor level separates that from a
+regression, because a clean runner's median never moved; each one opened a
+`regression` issue or blocked a PR until someone re-ran the job by hand.
+
+`benchmarks/self_latency/measure.py` now measures a series that fails its
+Floor once more in the same process and reports the second series. A tail
+that reproduces still fails. One that does not passes, and the first p95
+stays in the artifact beside it (`latency.<tool>_warm_p95_first_ms`,
+`latency.<tool>_resampled`) and in the step log. It is not in `bench.md`'s
+table or the PR comment, which show verdicts only. A passing series is
+measured once. The Floors are unchanged; what they measure is not, and
+`harness/thresholds.json` and STANDARD criterion 5 say so: a defect that
+slows 10% of calls now fails the gate with p 0.37 where it failed with
+p 0.61 (review).
+
+### Changed - a C++ template specialisation keeps its arguments in its id (LEDGER L-54)
+
+`template <> struct hash<A> {}` and `hash<B>` were both named `hash`, so
+the specialisations of one template in a file were `hash#type~1` and
+`hash#type~2`. Those ids depend on source order, and none could be found
+as `hash<A>`. jjg ruled on 2026-09-28 that the arguments stay in the id.
+
+A class, struct or union specialisation is now named with its arguments,
+with whitespace dropped around punctuation so one specialisation has one
+spelling: `hash< std::pair<int,  int> >` is `hash<std::pair<int,int>>`.
+That holds at file scope, in a namespace, in a class body and out of line.
+The primary template keeps its bare name. An out-of-line member body
+resolves its scope one segment at a time. A segment written with
+arguments names the class of that spelling in the file when there is one.
+It names the primary template only when its arguments are exactly an
+enclosing template's own parameters (`template <class T> void
+B<T>::f()`). Otherwise it keeps its arguments, found or not. So
+`B<T*>::f` belongs to `B<T*>`, `B<int>::g` to `B<int>`, and `B<T>::f` to
+`B`. `hash<A>::h` in a `.cpp` whose header declares `hash<A>` is
+`hash<A>.h` with no parent, not `hash.h~N`. And `B<U*>::f`, which matches
+no specialisation's spelling, is left without an owner rather than guessed
+onto the primary. The one exception is C++'s own: under any enclosing
+`template <>`, a definition whose scope names no class in the file
+specialises the PRIMARY's member (gtest's `template <> float
+FloatingPoint<float>::Max()`, `template <> void O<int>::I::g()`,
+`template <> template <class U> void A<int>::f(U)`), so it is
+`FloatingPoint<float>.Max` owned by `FloatingPoint`, `O<int>.I.g` owned
+by `O.I`, and `A<int>.f` owned by `A`. A member of a
+class specialisation defined elsewhere is written without `template <>`,
+and that is what tells the two apart. A specialisation whose name the
+grammar cuts short keeps its bare name. fmt's `use_format_as<T,
+bool_constant<...<T>>::value>>` splits its `>>` wrongly and leaves the last
+`>` in an ERROR, so it would otherwise publish a name one `>` short. A
+comparison in parentheses (`B2<(1>2)>`) is not a bracket, but a character
+argument holding one (`K<'>'>`) reads as unbalanced and keeps the bare
+name, `K~N` as on `main`. Review found all
+three of the first: the first draft looked the whole
+scope up with arguments or without, so it named cross-file bodies
+`hash.h~N`, orphaned `O<int>::I<char>::g`, and attached `B<U*>::f` to
+`B`. Its second round found the member specialisation, which the
+per-segment rule had orphaned in gtest, and its third found the rule keyed
+on the last scope and the nearest `template`, two more spellings of it. The test pins each placement, the
+spacing, a partial specialisation, a union, out-of-line equivalence, the
+body owners, each of those shapes, and the cut-short name. The same
+exception covers a member CLASS: `template <> template <> struct
+O<int>::I<char>` is `O<int>.I<char>` under `O`, where `main` gave `O.I`
+under `O`.
+`test_a_cpp_template_span_ends_where_it_starts.py` looked its two
+specialisations up by the bare name `Foo`; it asserts their byte spans,
+and it looks them up as `Foo<int>` and `S<T*>` now.
+
+A specialisation's name is BUILT, not borrowed: the source may space it
+differently. The full tier's built-name guard (#733) caught that. It
+requires every built name to be one no reference search is trusted about,
+and `hash<A>` is not identifier-shaped, so `check_delete_safe` (the one
+tool that asks that rule) now refuses to call a specialisation unused by
+name. Before, it searched for the bare `hash`, which every specialisation
+of the template shares. The helper is declared a
+name builder in that guard (`_NAME_BUILDING_HELPERS`), whose new test
+spies on its real output through a parse and fails if any name it builds
+is identifier-shaped. Planted to return the bare name, it fails.
+
+Measured, `main` against this branch (leveldb 7ee830d, fmt 5da4e9a): id
+counts are unchanged in every set. fmt `.h` changes 15 files and fmt `.cc`
+11. `formatter.parse#method~3` becomes
+`formatter<custom_type>.parse#method`, and the fmt ids carrying a `~N`
+suffix fall from 3,411 to 2,762 of 9,064, and no id gains an unbalanced
+`<` (45 on each side, every one an `operator<` or similar). Parented rows
+COUNTED per argument-free name (a set cannot count, which is how review's
+second round saw two gtest bodies the first metric hid): one name loses a
+row, the `format-test.cc` body below, and two gain one. The owners that
+change are 14 methods, 6 types and 5 fields reparented in fmt's headers,
+each from a `~N`-numbered owner (`formatter#type~1`) to the same class
+without the number, once its specialisations stopped sharing its name. One body in `format-test.cc`,
+`fmt::formatter<incomplete_type>::format`, had been parented to a
+DIFFERENT specialisation (`fmt.formatter#type`, the
+`explicitly_convertible_to_std_string_view` one). It now has no parent,
+because its class is declared inside the `FMT_BEGIN_NAMESPACE` macro and
+so indexes without the `fmt.` its body carries. leveldb: no change. A function
+template's explicit specialisation (`template <> void f<int>(int)`) is
+still named `f` (LEDGER L-56).
+
+### Fixed - a C++ header of namespaced declarations is read as C++ (LEDGER L-52)
+
+A `.h` is parsed with both grammars and the better parse wins. The C
+grammar reads `namespace n { class A { void f(); }; }` without a single
+error: `namespace n` becomes a function returning a type named `namespace`,
+and everything inside it a statement block. With both parses clean, the
+tie went to the parse with MORE symbols, and the misparse had more. So a
+declaration-only header in a namespace (6 of leveldb's 56 headers)
+published `n#function` and bare `f#function` rows instead of its classes
+and qualified functions. Found in L-46's review.
+
+A C++ parse that holds a declaration no C source can spell (a
+namespace, class, template, access specifier, `using` or alias), outside
+an ERROR, now wins. That is read from the tree, not from the lexical
+markers the tie-break already had, which match `class ` in a comment. It
+runs ahead of the error comparison, not only on a tie: a Qt `signals:`
+section costs the C++ parse one ERROR and C none, and the first draft
+still chose C there (review). `extern "C" {` is not on the list, because
+the C++ grammar reads a C header's guard that way; counting it moved four
+redis headers (hiredis's `alloc.h`, `async.h`, `read.h` and linenoise's
+`linenoise.h`) to C++ (review).
+The test pins that a namespaced class, a class, access specifiers, a
+namespaced struct, a template, namespace prototypes, a Qt `signals:`
+class and an include-guarded header publish what the same text publishes
+as `.cpp`, and that a C header (a struct, `class` in a comment, a typedef
+with an inline function, hiredis's `extern "C"` guard shape) publishes what
+it publishes as `.c`.
+
+The cost of running it first: a C header that carries a C++ block inside
+`#ifdef __cplusplus` (a `class Wrapper;` forward declaration) is read as
+C++ even where the C++ parse has more errors, so a C `typedef struct buf
+{...} buf;` in it publishes C++'s rows (`buf#type~1`/`~2`, `buf.data`)
+where it published C's (`buf#type`, `buf.buf#type`). Names move, none is
+lost, and no header in lua or redis has that shape (review).
+
+Not fixed (LEDGER L-55), with no real header of either shape found in lua
+or redis:
+- a C header that names a type `using` and then declares with it
+  (`typedef int using; using f(int);`) is read as C++ and loses `f`,
+  because the C++ grammar recovers with a MISSING node that the error
+  count does not see;
+- a K&R definition (`int old(a, b) int a; int b; { ... }`) in a C header
+  that also holds a C++ block is read as C++ and loses `old`, which the
+  C++ grammar drops without an ERROR.
+
+Measured, `main` against this branch:
+- lua 0b29f40 and redis 4cb007b (340 C headers, 516 `.c` files): no id
+  changes;
+- fmt 5da4e9a: no change;
+- leveldb 7ee830d `.h`: 6 headers change, `ids 1163 -> 1155`. The 13
+  removed ids are the misparse: six `leveldb#function`, one each of
+  `leveldb.log#function` and `leveldb.crc32c#function`, and four bare
+  functions (`NewDBIterator`, `NewMemEnv`, `NewMergingIterator`, `Hash`)
+  plus `Extend`, which become `leveldb.NewDBIterator`, `leveldb.NewMemEnv`,
+  `leveldb.NewMergingIterator`, `leveldb.Hash` and `leveldb.crc32c.Extend`.
+  `crc32c`'s `Mask`, `Unmask` and `Value` and `log_format.h`'s
+  `RecordType` lose the bogus function as their parent.
+
 ### Fixed - a C++ class defined with a qualified name is its owner's member (LEDGER L-46)
 
 The pimpl idiom declares a nested class and defines it outside its owner:
@@ -22,7 +806,8 @@ specialisations of one template in a file, `template <> struct
 std::hash<A> {}` and `std::hash<B>`, were `hash<A>#type` and `hash<B>#type`
 and are now `std.hash#type~1` and `~2` in source order, as the same two
 written inside `namespace std { }` already were. How a specialisation is
-named at all is LEDGER L-54. A leading `::` resolves from the file scope:
+named at all is LEDGER L-54, whose entry above gives both forms their
+arguments back. A leading `::` resolves from the file scope:
 `class ::A::B {}` is `A.B` (it was `A::B`), and `class ::Top` is unchanged.
 
 The first draft broke L-07. L-07 reads a scope that a file-scope symbol is

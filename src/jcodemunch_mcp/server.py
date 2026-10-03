@@ -3153,6 +3153,8 @@ def _build_tools_list(
                 "and change volume — into a single composite risk_score (0.0–1.0) with actionable "
                 "recommendations. Returns the top-5 riskiest changed symbols, untested symbols, "
                 "and per-signal breakdowns. Designed for CI gating and code review workflows. "
+                "risk_score is null, with unmeasurable_axes, when the blast axis could not be measured; "
+                "a CI gate must treat null as a failure, not a pass. "
                 "Requires a locally indexed repo (index_folder)."
             ),
             inputSchema={
@@ -3263,7 +3265,8 @@ def _build_tools_list(
                 "Check whether renaming a symbol to a new name would cause name collisions. "
                 "Scans the symbol's own file and every file that imports it, "
                 "looking for an existing symbol with the proposed new name. "
-                "Returns safe=true when no collisions are found. "
+                "Returns safe=true when no collisions are found, and safe=null with `unresolvable` "
+                "when the import graph could not reach the symbol's file, so its users went unchecked. "
                 "Run this before any rename/refactor to avoid silent breakage. "
                 "For a full rename plan with edits, use plan_refactoring."
             
@@ -3299,7 +3302,8 @@ def _build_tools_list(
                 "(Phase 7 traces when available), and entry-point heuristics into a single verdict + "
                 "one-line recommended_action. Verdict tiers: safe_to_delete / test_coverage_only / "
                 "internal_only / internal_uses_blocking / external_uses_blocking / cross_repo_blocking "
-                "/ runtime_observed / entry_point. Top-5 blockers ranked by severity. Read-only — "
+                "/ runtime_observed / scip_referenced / entry_point / corpus_inadequate / "
+                "name_not_searchable / dynamic_import_boundary. Top-5 blockers ranked by severity. Read-only — "
                 "never mutates the codebase. "
                 "ALREADY CONSULTED, do not re-run to confirm this verdict: find_dead_code, "
                 "find_importers, check_references. "
@@ -3338,7 +3342,8 @@ def _build_tools_list(
                 "and what you must preserve. Fuses signature impact (external/cross-repo importers), "
                 "cyclomatic complexity, test-coverage presence, and runtime traffic into a single "
                 "verdict + one-line recommended_action. Verdict tiers: safe_to_edit / untested / "
-                "complexity_risk / signature_impact / runtime_critical. Top-5 blockers ranked by "
+                "complexity_risk / signature_impact / runtime_critical / dynamic_import_boundary. "
+                "Top-5 blockers ranked by "
                 "severity. Read-only — never mutates the codebase. "
                 "ALREADY CONSULTED, do not re-run to confirm this verdict: find_importers, "
                 "check_references. "
@@ -7273,6 +7278,13 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent] | Cal
                         _v["absence_citable"] = False
                         _v["absence_blocked_by"] = _why
                         _absence_carrier = {"citable": False, "blocked_by": _why}
+                        if _v.get("state") == "absent":
+                            # (#872) Refusals decided here (staleness,
+                            # truncation) leave the state `absent`, whose note
+                            # says the absence is strong evidence and not to
+                            # search again -- beside a refusal saying it is
+                            # not evidence. The note names the refusal instead.
+                            _v["note"] = _handoff_abs.refused_absence_note(_why)
         except Exception:
             logger.debug("Absence-evidence record failed", exc_info=True)
 
@@ -8381,6 +8393,17 @@ def _generate_claude_md_snippet(missing_only: bool = False) -> str:
 
 def _run_claude_md(generate: bool = False, fmt: str = "full") -> None:
     """Output the recommended CLAUDE.md snippet for the current tool set."""
+    if fmt == "policy":
+        # (#871) The exact block `init` installs and `config --check` compares
+        # against. `full` is a different generator's text, and replacing an
+        # installed block with it would make the drift permanent.
+        from .cli.init import ensure_config_loaded
+        from .cli.policy import active_policy
+
+        ensure_config_loaded()
+        _policy_text = active_policy()
+        print(_policy_text, end="" if _policy_text.endswith("\n") else "\n")
+        return
     missing_only = fmt == "append"
     snippet = _generate_claude_md_snippet(missing_only=missing_only)
     if missing_only and not snippet:
@@ -8959,6 +8982,26 @@ def _run_config(check: bool = False, init: bool = False, upgrade: bool = False) 
                         issues.append("claude_md")
                     else:
                         print(f"  {green(CHECK)} All {len(canonical_tools)} tools mentioned in CLAUDE.md")
+                # (#871) The tool-name check above cannot see a policy whose
+                # WORDING changed (#719 changed what agents are told about
+                # absence), and `init` skips a file that already holds the
+                # marker, so a correction never reached an existing install.
+                # A message only: this never rewrites the user's file.
+                from .cli.policy import installed_policy_drift as _drift_of
+
+                _drift = _drift_of(cm_content)
+                if _drift is not None and _drift["state"] == "current":
+                    print(f"  {green(CHECK)} Installed policy matches the policy this version installs")
+                elif _drift is not None:
+                    print(
+                        f"  {yellow(WARN)} Installed policy differs from the policy this version installs "
+                        f"({_drift['lines_differing']} line(s))"
+                    )
+                    print(f"  {dim('  It may be out of date, or you may have edited it on purpose; this check cannot tell which.')}")
+                    print(f"  {dim('  To see the current text: jcodemunch-mcp claude-md --generate --format policy')}")
+                    # A warning, never an issue (review of #871): a block its
+                    # owner edited on purpose must not fail the health check,
+                    # whose exit status clients read as a broken install.
             except Exception as _e:
                 print(f"  {yellow(WARN)} Could not read CLAUDE.md: {_e}")
         else:
@@ -9467,10 +9510,11 @@ def main(argv: Optional[list[str]] = None):
     )
     claude_md_parser.add_argument(
         "--format",
-        choices=["full", "append"],
+        choices=["full", "append", "policy"],
         default="full",
         dest="fmt",
-        help="'full' (default) — complete snippet; 'append' — only tools not yet in your CLAUDE.md",
+        help="'full' (default) — complete snippet; 'append' — only tools not yet in your CLAUDE.md; "
+        "'policy' — the exact Code Exploration Policy `init` installs, which `config --check` compares against",
     )
 
     # --- index-file ---

@@ -67,13 +67,11 @@ PAIRS = {
         "class A { class B { void f(); }; };\n",
     ),
     "global-qualifier-in-namespace": (
-        # A field, because a `.h` whose namespaced class holds only method
-        # prototypes is read as C (LEDGER L-52, as on main).
         "namespace n { class A { class B; }; }\nclass ::n::A::B { int y; void f(); };\n",
         "namespace n { class A { class B { int y; void f(); }; }; }\n",
     ),
-    # MOVES (disclosed): two specialisations of one template in a namespace
-    # are named as the inline form names them, `std.hash` numbered ~1/~2.
+    # Two specialisations of one template in a namespace are named as the
+    # inline form names them: `std.hash<A>` and `std.hash<B>` since L-54.
     "two-specialisations": (
         "template <> struct std::hash<A> { int h(); };\ntemplate <> struct std::hash<B> { int h(); };\n",
         "namespace std {\ntemplate <> struct hash<A> { int h(); };\ntemplate <> struct hash<B> { int h(); };\n}\n",

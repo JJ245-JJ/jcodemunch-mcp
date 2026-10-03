@@ -21,9 +21,13 @@ Verdict tiers (most-permissive first):
                              would write that name: a C# operator is invoked as
                              `a + b`, an indexer as `a[0]`. Absence of the token
                              is not evidence of disuse. #714
+  - dynamic_import_boundary — nothing references it statically, and a Python
+                             dynamic import scoped to its package can load it
+                             (`import_module(f"adapters.{name}")`). The sites
+                             are named. LEDGER L-70
 
-⚠⚠ **Both `corpus_inadequate` and `name_not_searchable` replace an absence
-verdict, never a blocking one.**
+⚠⚠ **`corpus_inadequate`, `name_not_searchable` and `dynamic_import_boundary`
+each replace an absence verdict, never a blocking one.**
 A found importer is positive evidence and a thin corpus cannot unfind it — the
 same asymmetry `_stop_rule._HARD_BLOCKER` already encodes.
 """
@@ -41,6 +45,7 @@ from ..storage.generation import connect_readonly
 from ..runtime.confidence import symbol_hit_count
 from . import _name_reachability
 from ._corpus_adequacy import UNPROVEN_CEILING, assess_corpus
+from ._dynamic_boundary import FILES_CAP as DYNAMIC_FILES_CAP, DynamicBoundary
 from ._stop_rule import build_stop_rule
 from ._utils import index_status_to_tool_error, resolve_repo
 
@@ -259,16 +264,20 @@ def check_delete_safe(
     internal_ref_count = 0
     test_ref_count = 0
     try:
-        from .check_references import check_references  # noqa: PLC0415
-        # Batch form (identifiers=[...]) so check_references returns its grouped
-        # `results` shape — singular (identifier=...) returns a flat response with
-        # no `results` key, which this loop would silently read as empty (#338).
-        ref_out = check_references(
-            repo=f"{owner}/{name}", identifiers=[target_name],
-            search_content=True, max_content_results=20,
-            storage_path=storage_path,
-        )
-        for entry in ref_out.get("results", []) or []:
+        from . import check_references  # noqa: PLC0415
+        # ⚠⚠ (LEDGER L-89) EVERY file, never a page. The public tool caps its
+        # content search at 20 files (100 at most), and this verdict was built
+        # from that page alone: twenty test files that merely MENTION the name
+        # pushed the one real caller off it, and a used function graded
+        # `test_coverage_only`. An absence claim needs the whole corpus -- a
+        # count taken after the page is cut describes the page (#559). The
+        # cost is at most one full scan, which a no-match search pays anyway.
+        ref_entries = [check_references._check_single(
+            identifier=target_name, index=index, search_content=True,
+            max_content_results=max(1, len(index.source_files)),
+            owner=owner, name=name, store=store, start=time.perf_counter(),
+        )]
+        for entry in ref_entries:
             for ref in entry.get("content_references", []) or []:
                 ref_file = ref.get("file", "")
                 if not ref_file:
@@ -438,11 +447,53 @@ def check_delete_safe(
             "severity": _SEVERITY_INTERNAL_REF,
         })
 
-    corpus_gap = None
-    if not corpus_adequacy.adequate and verdict in (
-        "safe_to_delete", "internal_only", "test_coverage_only",
+    # ── A dynamic import can load its file (LEDGER L-70) ───────────────
+    # ⚠⚠ The destructive surface of #876's boundary. `get_blast_radius`
+    # refused an empty walk for a file a package- or prefix-scoped dynamic
+    # import can reach, while this tool certified the same symbol
+    # `safe_to_delete`: the loader names the module at runtime, so no
+    # importer and no reference exist to find. Same asymmetry as the two
+    # gates above: only ABSENCE verdicts are replaced. An opaque site is
+    # not a blocker (jjg, 2026-09-29); `get_blast_radius` discloses it.
+    dynamic_gap = None
+    reaching = DynamicBoundary(index.imports).reaching(target.get("file", ""))
+    # (LEDGER L-81) `name_not_searchable` gains the gap and the blocker and
+    # keeps its name, the narrower cause; skipping it hid the loaders.
+    if reaching and verdict in (
+        "safe_to_delete", "internal_only", "test_coverage_only", "name_not_searchable",
     ):
-        verdict = "corpus_inadequate"
+        if verdict != "name_not_searchable":
+            verdict = "dynamic_import_boundary"
+        dynamic_gap = {
+            "action": "read the named loaders for the module names they can produce",
+            "why": (
+                f"{len(reaching)} file(s) import a module by a computed name that can "
+                f"reach this file (e.g. {reaching[0]}), so finding no importer is not "
+                "evidence that nothing loads it"
+            ),
+        }
+        blocker = {
+            "kind": "dynamic_import_boundary",
+            "blockers": [dynamic_gap["why"]],
+            "files": reaching[:DYNAMIC_FILES_CAP],
+            "severity": _SEVERITY_INTERNAL_REF,
+        }
+        if len(reaching) > DYNAMIC_FILES_CAP:
+            blocker["files_total"] = len(reaching)
+        blockers.append(blocker)
+
+    corpus_gap = None
+    # ⚠ Evaluated after the dynamic gate too: when that gate has already
+    # replaced the absence verdict, a thin corpus is still a blocker and a
+    # gap, and dropping it would hide the re-index that could change the
+    # answer. The dynamic verdict keeps the name; it is the narrower cause,
+    # and so does `name_not_searchable` (LEDGER L-81).
+    if not corpus_adequacy.adequate and verdict in (
+        "safe_to_delete", "internal_only", "test_coverage_only", "dynamic_import_boundary",
+        "name_not_searchable",
+    ):
+        if verdict not in ("dynamic_import_boundary", "name_not_searchable"):
+            verdict = "corpus_inadequate"
         corpus_gap = {
             "action": "re-index this repo",
             "why": corpus_adequacy.warning(),
@@ -461,6 +512,12 @@ def check_delete_safe(
         # unproven verdict to 0.85. Nothing was established here, so nothing is
         # floored.
         confidence = min(confidence, corpus_adequacy.ceiling)
+    elif verdict == "dynamic_import_boundary":
+        # Nothing was established either way: the same ceiling the other
+        # unproven absence uses, never the 0.85 floor `safe_to_delete` gets.
+        confidence = min(confidence, UNPROVEN_CEILING)
+        if corpus_gap:
+            confidence = min(confidence, corpus_adequacy.ceiling)
     elif verdict == "name_not_searchable":
         # ⚠ NOT `corpus_adequacy.ceiling`: the corpus may be perfectly adequate
         # -- the first draft used it and published confidence 1.0 on a refusal,
@@ -507,6 +564,10 @@ def check_delete_safe(
             "No references found BY NAME, and no call site would write this "
             "name: it is invoked syntactically. Read the call sites, or check "
             "runtime evidence, before deleting."
+        ),
+        "dynamic_import_boundary": (
+            "No static importer or reference found, but a dynamic import scoped to "
+            "this package can load the file. Read the named loaders before deleting."
         ),
         "corpus_inadequate": (
             "No references found, but this index cannot support that as proof. "
@@ -572,6 +633,8 @@ def check_delete_safe(
             include_runtime=include_runtime,
             runtime_data_present=runtime_data_present,
             corpus_gap=corpus_gap,
+            dynamic_gap=dynamic_gap,
+            name_gap=unreachable_name,
         ),
         "corpus_adequacy": corpus_adequacy.as_dict(),
         "signals": {

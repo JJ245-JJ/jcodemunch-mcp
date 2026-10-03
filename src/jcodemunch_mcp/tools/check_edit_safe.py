@@ -12,6 +12,8 @@ Verdict tiers (most-constraining first):
   - signature_impact  — external/cross-repo callers (incl. compiler-verified SCIP refs) depend on the signature; body edits OK, keep the contract
   - complexity_risk   — high cyclomatic complexity; edits are regression-prone
   - untested          — referenced but no test coverage; add a characterization test first
+  - dynamic_import_boundary — would be safe_to_edit, but a dynamic import can
+                        load the file, so "no external callers" is unproven (LEDGER L-75)
   - safe_to_edit      — low complexity, no external callers; modify freely
 
 The canonical signal helpers (`_is_test_file`, `_resolve_target`,
@@ -28,6 +30,7 @@ from typing import Optional
 
 from ..retrieval.verdict import symbol_not_found
 from ..storage import IndexStore, record_savings, estimate_savings, cost_avoided
+from ._corpus_adequacy import UNPROVEN_CEILING
 from ._stop_rule import build_stop_rule
 from ._utils import index_status_to_tool_error, resolve_repo
 from .check_delete_safe import (
@@ -110,12 +113,18 @@ def check_edit_safe(
     external_import_count = 0
     test_import_count = 0
     cross_repo_count = 0
+    dynamic_block: Optional[dict] = None
     try:
         from .find_importers import find_importers  # noqa: PLC0415
         importers_out = find_importers(
             repo=f"{owner}/{name}", file_path=target_file,
             cross_repo=cross_repo, storage_path=storage_path,
         )
+        # (LEDGER L-75) The scoped dynamic imports that can load this file,
+        # named by find_importers from the one reach rule (L-73). They call
+        # into it at runtime, so they depend on its signature too; they are
+        # never counted as importers because which module loads is unknown.
+        dynamic_block = importers_out.get("dynamic_import_boundary")
         for entry in importers_out.get("importers", []) or []:
             if entry.get("cross_repo"):
                 cross_repo_count += 1
@@ -236,6 +245,15 @@ def check_edit_safe(
             _scip_meta, _scip_stale, verified_external_refs=scip_external_count,
         )
 
+    if dynamic_block:
+        blockers.append({
+            "kind": "dynamic_import_boundary",
+            "files": list(dynamic_block.get("files") or []),
+            "files_total": dynamic_block.get("files_total", 0),
+            "severity": _SEVERITY_EXTERNAL_IMPORT,
+            "info": "a dynamic import can load this file and call it; no static caller shows that",
+        })
+
     # ── Verdict selection (most-constraining first) ────────────────────────
     signature_impact = (external_import_count + cross_repo_count + scip_external_count) > 0
 
@@ -249,19 +267,50 @@ def check_edit_safe(
         verdict = "untested"
     else:
         verdict = "safe_to_edit"
+    # ⚠ Only the ABSENCE verdict is replaced ("no external callers"): a verdict
+    # built on positive evidence keeps its name and carries the loader as a
+    # blocker. Same asymmetry as check_delete_safe's gate (L-70).
+    # ⚠ `untested` rests on the same claim (signature_impact outranks it, so
+    # "no external caller" holds there too): it keeps its name, since a known
+    # use with no test is positive evidence, but it is never terminal past a
+    # loader, because reading the loader can move it to signature_impact
+    # (review, L-75).
+    dynamic_gap = None
+    if verdict in ("safe_to_edit", "untested") and dynamic_block:
+        if verdict == "safe_to_edit":
+            verdict = "dynamic_import_boundary"
+        dynamic_gap = {
+            "action": "read the named loaders for the module names they can produce",
+            "why": (
+                f"{dynamic_block.get('files_total', 0)} file(s) import a module by a computed "
+                "name that can reach this file, so finding no external caller is not evidence "
+                "that nothing calls it"
+            ),
+        }
 
     # ── Confidence (higher = safer to edit freely) ─────────────────────────
-    confidence = {
+    _scale = {
         "runtime_critical": 0.15,
         "signature_impact": 0.40,
         "complexity_risk": 0.45,
         "untested": 0.55,
         "safe_to_edit": 0.90,
-    }[verdict]
+    }
+    # Nothing was established either way: capped at the ceiling this project
+    # uses for an absence nothing could prove (L-70), and never read as safer
+    # than `untested` on this scale, since an unseen caller is no smaller a
+    # risk than a seen one without a test (review, L-75).
+    _scale["dynamic_import_boundary"] = min(UNPROVEN_CEILING, _scale["untested"])
+    confidence = _scale[verdict]
     if verdict == "safe_to_edit" and has_test_coverage:
         confidence = 0.95  # low complexity, no callers, and covered by tests
 
     # ── Recommended action ─────────────────────────────────────────────────
+    # The block's list is capped; a sentence naming ten of thirteen loaders
+    # must say so, or it reads as the whole list (review, L-75).
+    _named = list((dynamic_block or {}).get("files") or [])
+    _more = int((dynamic_block or {}).get("files_total", len(_named)) or 0) - len(_named)
+    loaders_named = ", ".join(_named) + (f", and {_more} more" if _more > 0 else "")
     callers = external_import_count + cross_repo_count + scip_external_count
     tests_note = "" if has_test_coverage else " No test coverage detected — add a characterization test first."
     actions = {
@@ -280,6 +329,11 @@ def check_edit_safe(
         "untested": (
             f"Referenced by {internal_ref_count} site(s) with no test coverage. Add a "
             "characterization test before editing to catch regressions."
+        ),
+        "dynamic_import_boundary": (
+            f"No static caller, but a dynamic import can load this file ({loaders_named}). "
+            "Read the loader for the module names it produces before changing the "
+            f"signature; body edits that keep the contract are safe.{tests_note}"
         ),
         "safe_to_edit": (
             "Low complexity, no external callers — safe to edit."
@@ -363,8 +417,12 @@ def check_edit_safe(
             cross_repo=cross_repo,
             include_runtime=include_runtime,
             runtime_data_present=runtime_data_present,
+            dynamic_gap=dynamic_gap,
         ),
         "signals": {
+            # (L-75) Survives the top-5 blocker cut, where the loader blocker can
+            # be displaced by higher-severity evidence.
+            "dynamic_loader_count": int((dynamic_block or {}).get("files_total", 0) or 0),
             "external_import_count": external_import_count,
             "cross_repo_count": cross_repo_count,
             "test_import_count": test_import_count,

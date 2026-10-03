@@ -349,7 +349,409 @@ def _extract_python_imports(content: str) -> list[dict]:
                 seen.add(mod)
                 edges.append({"specifier": mod, "names": []})
 
+    if "__import__" in content or "import_module" in content:
+        edges.extend(_python_dynamic_imports(content, seen))
+
     return edges
+
+
+# (#876) The marker edge for a dynamic import whose target is not a literal.
+# Its specifier resolves to nothing, so every consumer skips it the way it
+# skips any unresolvable specifier; `get_blast_radius.blast_verdict` reads it:
+# a `package`/`prefix:` scope that reaches the file refuses an empty walk,
+# naming the site; an `opaque` one is disclosed beside it (jjg, 2026-09-29).
+DYNAMIC_IMPORT_UNRESOLVED = "<dynamic-import>"
+
+
+def _is_dynamic_import_call(node) -> bool:
+    import ast
+
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id in ("__import__", "import_module")
+    if isinstance(func, ast.Attribute):
+        return func.attr == "import_module" or func.attr == "__import__"
+    return False
+
+
+def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
+    """Dynamic imports as edges (#876), bounded: no symbolic execution.
+
+    A target becomes edges when it is knowable:
+    - a string literal;
+    - a module-level literal table, indexed along its subscript path
+      (``GRAMMARS[name][1]`` is each value's element 1, never a dict key);
+    - a loop variable over a literal tuple/list (``for m in ("a", "b")``),
+      when EVERY binding of that name in the file is such a loop;
+    - a literal passed ONE step into a parameter of a function in this file
+      that feeds one, by position or keyword -- only while the parameter is
+      never rebound in that function, and only when EVERY use of the function
+      in this file is a direct call (a function passed to ``map``, registered,
+      or called on another object can receive anything).
+    Otherwise the call site is recorded once per scope as a marker edge,
+    ``dynamic_scope`` saying what it can reach: ``package`` (built from this
+    package's own name, the #569 shape, or a leading-dot name anchored on it
+    with ``package=``), ``prefix:<dotted>`` (a literal module prefix, or
+    ``X.__name__`` of an imported module ``X``), or ``opaque``.
+    ``blast_verdict`` refuses an empty walk only for a scope that reaches the
+    file; an opaque site is disclosed, not refused (jjg, 2026-09-29: a
+    registry-driven loader exists in most repos, and a refusal that fires on
+    every empty result teaches people to ignore it).
+    """
+    import ast
+
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        # Unparseable (py2, a template): no edges and no marker. One such file
+        # must not become a boundary for the whole repository (review of #876).
+        logger.debug("dynamic-import scan skipped: file does not parse", exc_info=True)
+        return []
+
+    out: list[dict] = []
+    scopes: set[str] = set()
+
+    def add(spec: str) -> None:
+        if spec and spec not in seen:
+            seen.add(spec)
+            out.append({"specifier": spec, "names": [], "dynamic": True})
+
+    def literal(node) -> Optional[str]:
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+    def stores(root, name: str) -> int:
+        """Bindings of ``name`` under ``root``: assignment targets and parameters."""
+        n = 0
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+                n += 1
+            elif isinstance(node, ast.arg) and node.arg == name:
+                n += 1
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                n += sum(1 for a in node.names if (a.asname or a.name.split(".")[0]) == name)
+        return n
+
+    def _frozen(node) -> bool:
+        return isinstance(node, ast.Constant) or (
+            isinstance(node, ast.Tuple) and all(_frozen(e) for e in node.elts)
+        )
+
+    def _frozen_below(node) -> bool:
+        """Everything under the top level is a constant or a tuple of them.
+
+        Only the table's own name is guarded against change (`_only_read`); a
+        mutable value reached through it (`T["a"].append(cfg)`,
+        `for v in T.values(): v.append(cfg)`) is a change no name-level rule
+        sees, so such a table is not a literal at all (review of #876).
+        """
+        elts = node.values if isinstance(node, ast.Dict) else node.elts
+        keys_ok = all(k is None or _frozen(k) for k in node.keys) if isinstance(node, ast.Dict) else True
+        return keys_ok and all(_frozen(e) for e in elts)
+
+    # Module-level literal tables.
+    tables: dict[str, ast.AST] = {}
+    for stmt in tree.body:
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else (
+            [stmt.target] if isinstance(stmt, ast.AnnAssign) and stmt.value is not None else []
+        )
+        value = getattr(stmt, "value", None)
+        if isinstance(value, (ast.Dict, ast.List, ast.Tuple, ast.Set)) and _frozen_below(value):
+            for t in targets:
+                if isinstance(t, ast.Name):
+                    tables[t.id] = value
+    # A table is the literal it was only while nothing can change what it
+    # holds: a rebinding, `T[k] = cfg`, `del T[k]`, a mutating method
+    # (`T.update(...)`), an alias (`U = T`) or handing `T` to a function we
+    # cannot see all make it a site (review of #876). Reads stay reads:
+    # `T[k]`, `k in T`, `for k in T`, `sorted(T)`, `T.get(k)`.
+    read_methods = {"get", "keys", "values", "items", "copy", "index", "count"}
+    read_builtins = {
+        "sorted", "len", "list", "tuple", "set", "frozenset", "dict", "iter",
+        "enumerate", "reversed", "any", "all", "min", "max", "str", "repr", "print",
+    }
+
+    def _use_is_a_read(parent, child) -> bool:
+        if isinstance(parent, ast.Subscript):
+            return parent.value is child and isinstance(parent.ctx, ast.Load)
+        if isinstance(parent, ast.Attribute):
+            return parent.attr in read_methods
+        if isinstance(parent, ast.Call):
+            return (
+                child in parent.args and isinstance(parent.func, ast.Name)
+                and parent.func.id in read_builtins
+            )
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.comprehension)):
+            return parent.iter is child
+        return isinstance(parent, (ast.Compare, ast.FormattedValue, ast.BoolOp, ast.UnaryOp, ast.If, ast.While))
+
+    def _only_read(name: str) -> bool:
+        if stores(tree, name) != 1:
+            return False
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                if (
+                    isinstance(child, ast.Name) and child.id == name
+                    and isinstance(child.ctx, ast.Load) and not _use_is_a_read(parent, child)
+                ):
+                    return False
+        return True
+
+    tables = {k: v for k, v in tables.items() if _only_read(k)}
+
+    def _select(nodes: list, key) -> Optional[list]:
+        """Apply one subscript to candidate container nodes; None when unknowable."""
+        k = key.value if isinstance(key, ast.Constant) else None
+        out_nodes: list = []
+        for n in nodes:
+            if isinstance(n, ast.Dict):
+                if k is None:
+                    out_nodes.extend(n.values)
+                else:
+                    hits = [v for kk, v in zip(n.keys, n.values) if isinstance(kk, ast.Constant) and kk.value == k]
+                    out_nodes.extend(hits)
+            elif isinstance(n, (ast.List, ast.Tuple)):
+                if isinstance(k, int) and -len(n.elts) <= k < len(n.elts):
+                    out_nodes.append(n.elts[k])
+                elif k is None:
+                    out_nodes.extend(n.elts)
+                else:
+                    return None
+            else:
+                return None
+        return out_nodes
+
+    def table_candidates(node) -> Optional[list[str]]:
+        keys = []
+        while isinstance(node, ast.Subscript):
+            keys.append(node.slice)
+            node = node.value
+        if not keys or not isinstance(node, ast.Name) or node.id not in tables:
+            return None
+        nodes: Optional[list] = [tables[node.id]]
+        for key in reversed(keys):
+            nodes = _select(nodes, key) if nodes is not None else None
+        if not nodes:
+            return None
+        strings = [literal(n) for n in nodes]
+        return [s for s in strings if s] if all(strings) else None
+
+    # Loop variables over literal sequences: `for m in ("a", "b")`. A name
+    # also bound any other way (`m = cfg`) is not bounded by its loops.
+    loop_values: dict[str, list[str]] = {}
+    loop_bindings: dict[str, int] = {}
+    for node in ast.walk(tree):
+        gens = []
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            gens = [(node.target, node.iter)]
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            gens = [(g.target, g.iter) for g in node.generators]
+        for target, it in gens:
+            if isinstance(target, ast.Name) and isinstance(it, (ast.List, ast.Tuple, ast.Set)):
+                vals = [literal(e) for e in it.elts]
+                if vals and all(vals):
+                    loop_values.setdefault(target.id, []).extend(v for v in vals if v)
+                    loop_bindings[target.id] = loop_bindings.get(target.id, 0) + 1
+    loop_values = {k: v for k, v in loop_values.items() if stores(tree, k) == loop_bindings[k]}
+    # A comprehension's target is local to it, so an import call in its body
+    # reading that target is bounded exactly, however else the name is used
+    # outside it -- unless the comprehension itself binds the name again.
+    comp_values: dict[int, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        for g in node.generators:
+            if not (isinstance(g.target, ast.Name) and isinstance(g.iter, (ast.List, ast.Tuple, ast.Set))):
+                continue
+            vals = [literal(e) for e in g.iter.elts]
+            if not (vals and all(vals)):
+                continue
+            if stores(node, g.target.id) != 1:
+                continue  # shadowed by an inner comprehension or a later generator
+            body = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            for part in [*body, *g.ifs]:
+                for call in ast.walk(part):
+                    if (
+                        isinstance(call, ast.Call) and _is_dynamic_import_call(call) and call.args
+                        and isinstance(call.args[0], ast.Name) and call.args[0].id == g.target.id
+                    ):
+                        comp_values[id(call)] = [v for v in vals if v]
+
+    # Names bound to a package or module name.
+    own_pkg = {"__name__", "__package__"}
+    module_alias: dict[str, str] = {}  # alias -> absolute dotted module
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    module_alias[a.asname] = a.name
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name in ("__name__", "__package__") and a.asname and node.level > 0 and not node.module:
+                    own_pkg.add(a.asname)
+                elif node.level == 0 and node.module:
+                    module_alias[a.asname or a.name] = f"{node.module}.{a.name}"
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in ("__name__", "__package__"):
+            own_pkg |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+
+    def _leading(node):
+        if isinstance(node, ast.Constant):
+            return node
+        if isinstance(node, ast.JoinedStr) and node.values:
+            return node.values[0]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                node = node.left
+            return node
+        return None
+
+    def _anchor(call) -> Optional[ast.AST]:
+        """The ``package=`` argument of ``import_module(name, package)``."""
+        if call is None:
+            return None
+        if len(call.args) > 1:
+            return call.args[1]
+        return next((k.value for k in call.keywords if k.arg == "package"), None)
+
+    def scope_of(node, call=None) -> str:
+        """What an unresolved target can reach."""
+        head = _leading(node)
+        if head is None:
+            return "opaque"
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            if head.value.startswith("."):
+                # `import_module(f".{m}", __package__)`: this package's own
+                # modules, the relative spelling of the #569 shape. Only one
+                # dot: `..` climbs out of the package.
+                anchor = _anchor(call)
+                if (
+                    not head.value.startswith("..")
+                    and isinstance(anchor, ast.Name) and anchor.id in own_pkg
+                ):
+                    return "package"
+                return "opaque"
+            prefix = head.value.rstrip(".")
+            return f"prefix:{prefix}" if prefix else "opaque"
+        inner = head.value if isinstance(head, ast.FormattedValue) else head
+        if isinstance(inner, ast.Name) and inner.id in own_pkg:
+            return "package"
+        if (
+            isinstance(inner, ast.Attribute) and inner.attr == "__name__"
+            and isinstance(inner.value, ast.Name) and inner.value.id in module_alias
+        ):
+            return f"prefix:{module_alias[inner.value.id]}"
+        return "opaque"
+
+    def resolve_target(node) -> bool:
+        target = literal(node)
+        if target is not None:
+            add(target)
+            return True
+        candidates = table_candidates(node)
+        if candidates is not None:
+            for c in candidates:
+                add(c)
+            return True
+        if isinstance(node, ast.Name) and node.id in loop_values:
+            for c in loop_values[node.id]:
+                add(c)
+            return True
+        return False
+
+    # Functions whose parameter feeds a dynamic import, unrebound. A name
+    # defined twice is not propagated through: its call sites stay sites.
+    feeders: dict[str, tuple[int, str, bool]] = {}  # name -> (arg position, param, public)
+    feeder_node: dict[str, int] = {}
+    feeder_calls: dict[str, set[int]] = {}
+    duplicate: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
+        if params and params[0] in ("self", "cls"):
+            params = params[1:]  # a bound call passes them implicitly (review of #876)
+        for call in ast.walk(fn):
+            if isinstance(call, ast.Call) and _is_dynamic_import_call(call) and call.args:
+                arg = call.args[0]
+                if not (isinstance(arg, ast.Name) and arg.id in params):
+                    continue
+                if stores(fn, arg.id) != 1:
+                    continue  # rebound: `name = "plugins." + name` is not the caller's literal
+                if fn.name in feeder_node and feeder_node[fn.name] != id(fn):
+                    duplicate.add(fn.name)
+                if fn.name in feeders and feeders[fn.name][1] != arg.id:
+                    duplicate.add(fn.name)
+                feeder_node[fn.name] = id(fn)
+                feeders[fn.name] = (params.index(arg.id), arg.id, not fn.name.startswith("_"))
+                feeder_calls.setdefault(fn.name, set()).add(id(call))
+    for name in duplicate:
+        feeders.pop(name, None)
+
+    def _direct_callee(call) -> Optional[str]:
+        func = call.func
+        if isinstance(func, ast.Name):
+            return func.id
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name) and func.value.id in ("self", "cls")
+        ):
+            return func.attr
+        return None
+
+    # A feeder is resolved by its callers only when every use of its name in
+    # this file is a direct call; `map(_load, cfg)`, `registry.add(_load)` or
+    # `obj._load(x)` can hand it anything (review of #876).
+    direct_uses: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            callee = _direct_callee(node)
+            if callee in feeders:
+                direct_uses[callee] = direct_uses.get(callee, 0) + 1
+    all_uses: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in feeders and isinstance(node.ctx, ast.Load):
+            all_uses[node.id] = all_uses.get(node.id, 0) + 1
+        elif isinstance(node, ast.Attribute) and node.attr in feeders:
+            all_uses[node.attr] = all_uses.get(node.attr, 0) + 1
+    for name in list(feeders):
+        used = direct_uses.get(name, 0)
+        if used == 0 or all_uses.get(name, 0) != used:
+            feeders.pop(name)
+    fed_calls: set[int] = set().union(*(feeder_calls[n] for n in feeders)) if feeders else set()
+
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        if _is_dynamic_import_call(call):
+            if id(call) in fed_calls:
+                continue
+            if id(call) in comp_values:
+                for c in comp_values[id(call)]:
+                    add(c)
+                continue
+            if not (call.args and resolve_target(call.args[0])):
+                scopes.add(scope_of(call.args[0], call) if call.args else "opaque")
+            continue
+        callee = _direct_callee(call)
+        if callee in feeders:
+            pos, pname, _public = feeders[callee]
+            value = call.args[pos] if pos < len(call.args) else next(
+                (k.value for k in call.keywords if k.arg == pname), None
+            )
+            if value is None or not resolve_target(value):
+                scopes.add(scope_of(value) if value is not None else "opaque")
+
+    # A PUBLIC feeder can be called from another file with any argument: its
+    # own in-file calls cannot bound it (review of #876). A `_private` one is
+    # taken as module-private.
+    if any(public for _pos, _p, public in feeders.values()):
+        scopes.add("opaque")
+
+    for scope in sorted(scopes):
+        out.append({
+            "specifier": DYNAMIC_IMPORT_UNRESOLVED, "names": [],
+            "dynamic_unresolved": True, "dynamic_scope": scope,
+        })
+    return out
 
 
 def _extract_go_imports(content: str) -> list[dict]:

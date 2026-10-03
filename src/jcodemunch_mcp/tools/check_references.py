@@ -5,11 +5,77 @@ Answers "is this identifier used anywhere?" for quick dead-code detection.
 """
 
 import posixpath
+import re
 import time
+import unicodedata
 from typing import Optional
 
 from ..storage import IndexStore
 from ._utils import index_status_to_tool_error, resolve_repo
+
+
+def _fold(text: str) -> str:
+    """The spelling two identifiers are compared in (LEDGER L-84).
+
+    ⚠⚠ Python normalises identifiers to NFKC, so `def file()` called as
+    `\ufb01le()` (the fi ligature) is one function called once, and a byte
+    comparison never saw the call: `check_delete_safe` read that as no
+    reference and graded the used function `safe_to_delete` at 1.0.
+
+    NFKC on both sides of a LINE or IMPORT match, for every language: a
+    found reference only ever blocks a delete, and the search already
+    over-matches on purpose (substring, case-insensitive). Folding can drop
+    a raw hit only where a combining mark follows the identifier and NFKC
+    composes it onto the last letter (`file` + U+0301), which spells a
+    different identifier, so no real reference is lost.
+
+    ⚠⚠ NEVER fold the definition-span EXCLUSION (review, L-84): that step
+    REMOVES matches, and in a language that does not normalise, Java's
+    `\ufb01le()` and `file()` are two methods. Folding it skipped the body of
+    `\ufb01le` as `file`'s own definition and lost the call inside it --
+    `safe_to_delete` at 1.0 where main blocked. The identifier is the
+    declared spelling, so the exclusion needs no folding to find it.
+
+    (LEDGER L-86) Unicode escapes are decoded first. Java translates them
+    before it lexes (JLS 3.3), C# accepts them inside an identifier, and
+    ECMAScript accepts its braced form there too, so a call spelled with an
+    escape names the function it spells, and the raw line never matched it: a
+    used Java method graded `safe_to_delete` at 1.0, and a JS function the
+    same way through the braced form (review). Decoding runs on every line of
+    every language, strings and comments included.
+    ⚠ It cannot drop a CALL: wherever an escape can stand before a call, it
+    IS one. It can drop a textual MENTION whose letters sit inside an
+    escape's hex digits (a Windows path segment after a backslash that starts
+    with `u` and four hex digits), which this search counted before; that is
+    a mention, not a use. ⚠ Java's even-backslash rule is not applied: an
+    escaped backslash followed by `u` decodes too, which only adds a match.
+
+    ASCII is returned as `lower()` without normalising: NFKC is the
+    identity there, and this runs on every line of every file.
+    """
+    if "\\" in text:
+        text = _decode_escapes(text)
+    if text.isascii():
+        return text.lower()
+    return unicodedata.normalize("NFKC", text).lower()
+
+
+# A backslash, then: `u` and 1-6 hex digits in braces (ECMAScript); one or
+# more `u` and four hex digits (Java, C#, ECMAScript); or `U` and eight (C#).
+# Java allows the repeated `u`; the hex digits take either case.
+_ESCAPE = re.compile(r"\\(?:u\{([0-9A-Fa-f]{1,6})\}|u+([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8}))")
+
+
+def _unescape(m: "re.Match[str]") -> str:
+    cp = int(m.group(1) or m.group(2) or m.group(3), 16)
+    return chr(cp) if cp <= 0x10FFFF else m.group(0)
+
+
+def _decode_escapes(text: str) -> str:
+    out = _ESCAPE.sub(_unescape, text)
+    # Java spells a supplementary character as two escaped surrogates; join
+    # them, and leave any lone surrogate as a replacement character.
+    return out.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 def _check_single(
@@ -23,7 +89,15 @@ def _check_single(
     start: float,
 ) -> dict:
     """Core logic for checking a single identifier against import + content data."""
-    ident_lower = identifier.lower()
+    ident_lower = _fold(identifier)
+    # The exclusion's key: the EXACT declared spelling, case included. An
+    # exclusion REMOVES matches, so it must never widen (see `_fold`'s ⚠⚠):
+    # compared case-insensitively, Java `File()` beside `file()` skipped the
+    # body of `File` as `file`'s own definition and lost the call inside it,
+    # grading the used `file` `safe_to_delete` at 1.0 (LEDGER L-88). In a
+    # case-insensitive language, exact case errs toward counting a
+    # differently-cased declaration as a reference, which only blocks.
+    ident_exact = identifier
 
     # ── Import-level check ──────────────────────────────────────────────────
     import_references = []
@@ -31,9 +105,9 @@ def _check_single(
         for src_file, file_imports in index.imports.items():
             matches = []
             for imp in file_imports:
-                named_match = any(n.lower() == ident_lower for n in imp.get("names", []))
+                named_match = any(_fold(n) == ident_lower for n in imp.get("names", []))
                 spec = imp["specifier"]
-                spec_stem = posixpath.splitext(posixpath.basename(spec))[0].lower()
+                spec_stem = _fold(posixpath.splitext(posixpath.basename(spec))[0])
                 stem_match = spec_stem == ident_lower
 
                 if named_match or stem_match:
@@ -77,7 +151,7 @@ def _check_single(
     defining_spans: dict[str, list[tuple[int, int]]] = {}
     unspanned_files: set[str] = set()
     for sym in index.symbols:
-        if sym.get("name", "").lower() != ident_lower:
+        if sym.get("name", "") != ident_exact:
             continue
         file_path = sym.get("file", "")
         if not file_path:
@@ -118,7 +192,7 @@ def _check_single(
 
             file_matches = []
             for line_index, line in enumerate(content.split("\n")):
-                if ident_lower not in line.lower():
+                if ident_lower not in _fold(line):
                     continue
                 line_no = line_index + 1
                 if any(lo <= line_no <= hi for lo, hi in spans):
