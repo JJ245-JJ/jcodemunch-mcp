@@ -129,6 +129,51 @@ PyPI has the version and cannot be re-uploaded. Do not yank from a script.
    check was wrong, fix the check in a PR and close the issue with the run
    link. Either way the issue records the decision.
 
+## 3a. The registry job failed (a `release` issue was opened)
+
+PyPI and the GitHub release are live. Nothing is rolled back. The issue's
+title says which of two things happened (LEDGER L-96).
+
+1. **"registry could not be read after publishing vX.Y.Z".** The publish step
+   passed. No read of the registry got an answer: `scripts/registry_verify.py`
+   exited with its `UNREADABLE` code after every attempt timed out, was cut,
+   got an HTTP error status, returned a body, a page cursor or a row that was
+   not in the registry's shape, did not reach the last page, or the run's time
+   budget ran out. This says nothing about the publish. Read the registry
+   again:
+
+   ```
+   cd /d C:\MCPs\jcodemunch-mcp && python scripts\registry_verify.py --version X.Y.Z
+   ```
+
+   `PASS`: close the issue with that output. Do not re-publish.
+   The last line decides: `attempt N: FAIL: ...` lines above a final `PASS`
+   are a stale row that was asked again.
+   `UNREADABLE` again: read the `attempt N: no answer (<type>: ...)` lines.
+   - A timeout, a connection error, an HTTP 5xx or an HTTP 429: the registry
+     is still not answering. Wait and run it again.
+   - The same `ValueError` or `JSONDecodeError` on every attempt (a body, a
+     cursor or a row in another shape, a cursor that did not advance, too
+     many pages), or any other HTTP 4xx (the request itself is refused):
+     waiting will not fix it. The registry's shape changed or the script is wrong.
+     Read the row by hand
+     (`https://registry.modelcontextprotocol.io/v0/servers?search=io.github.jgravelle/jcodemunch-mcp&version=latest`),
+     close the issue on what it shows, and fix the script in a PR.
+   `FAIL:` as the last lines: the registry answered; go to item 2's first case.
+2. **"registry publish failed for vX.Y.Z".** Open the run and read which step
+   failed.
+   - The verify step failed with `FAIL:` lines: the registry answered and the
+     row is wrong. Run the line above. A zero-row read is the parse or the
+     name, never the publish. If the latest row is still the previous version,
+     the publish did not take; use the publish line in CLAUDE.md ("Registry
+     verification reads a NESTED row").
+   - The install or the publish step failed: the verify step never ran. Run
+     the line above first; publish by hand only if it does not read `PASS`.
+   - The verify step failed with no `FAIL:` line (a traceback, a usage
+     error): the script broke, and nothing was learned about the registry.
+     Run the line above; fix the script in a PR.
+3. The issue records what was run and what it printed.
+
 ## 4. PyPI quarantine or index trouble
 
 - **Quarantine / account block** (it happened 2026-06): the pipeline's

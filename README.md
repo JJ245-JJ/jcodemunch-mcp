@@ -158,10 +158,10 @@ That's the highlight reel. The complete tour of 90+ tools, the MUNCH compact wir
 <!-- WHATSNEW:START -->
 #### What's new
 
-- **[v1.108.320](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.320)** (2026-09-30) — a member the index never saw and a caller the search never found both read as nothing there
-- **[v1.108.319](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.319)** (2026-09-16) — the numbers a competitor published about us were right, and so was the refusal we had shipped over twice
-- **[v1.108.318](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.318)** (2026-09-11) — the process is code that cannot skip a step, and the field is measured from result files
-- **[v1.108.317](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.317)** (2026-09-04) — CI runs the harness on every change; publishing is a dispatched workflow
+- **[v1.108.328](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.328)** (2026-10-04) — a file a package.json script runs is an entry point
+- **[v1.108.327](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.327)** (2026-10-02) — a local model path is refused when the installed sentence-transformers would run its code
+- **[v1.108.326](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.326)** (2026-10-02) — the semantic extra requires a sentence-transformers that does not run a local model's code
+- **[v1.108.325](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.325)** (2026-10-02) — a lookup that found nothing is remembered
 <!-- WHATSNEW:END -->
 
 ---

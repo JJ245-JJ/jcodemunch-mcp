@@ -2060,3 +2060,115 @@ The 1.108.319 entry, verbatim, dropped when it was compressed to a `Prior` line:
 The `Tests:` line's 1.108.317 count, verbatim:
 
 - ⚠ Prior (1.108.317): 9241 passed, 19 skipped, **0 failed** (9260 total; the skip count is 19 under `uv run` and 13 under `PYTHONPATH=src python -m pytest`, harness F-05).
+
+## Current State rotation (2026-10-01, release 1.108.321)
+
+The 1.108.318 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.318):** **The process is code that cannot skip a step, and the field is measured from result files.** Three layers: the workflows layer (`/feature` · `/fix-issue` · `/release` · `/review` · `/triage-issue` · `/benchmark-compare` · `/competitive-compare`, with hooks that refuse a commit without the fast tier, a PR without a full-tier stamp on THIS tree, and every irreversible verb), the inbound layer (nine headless jobs, OFF until `INBOUND_ENABLED`, the model never holding a write token) and the competitive tier (the nulls, jCodeMunch and nine adapters over pinned corpora in a sandbox, every FINDINGS number script-written from a result file). Forensics: `docs/workflows/FINDINGS.md`, `docs/inbound/FINDINGS.md`, `docs/competitive/FINDINGS.md`.
+
+The 1.108.320 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.320 — **A member the index never saw and a caller the search never found both read as nothing there.** Class members and class state are indexed and owned in the languages that dropped them (Java, Kotlin, Go, Rust, Dart, Ruby, PHP, Python, JS/TS, C/C++, Pascal, F#, Nim, Zig, Swift; Haskell extracted nothing at all; #713-#858). The delete and edit preflights stopped certifying an absence their search could not see: a dynamic import that can load the file (#876, L-70, L-73, L-75; `tools/_dynamic_boundary.py` is the one reach rule), a name no call site writes (#714, L-80, L-81; a `_stop_rule._UNSETTLED` verdict is never terminal), a call in another Unicode spelling (L-84: `check_references` folds line and import matches through NFKC), a differently-cased sibling (L-88), and a page of test mentions hiding the caller (L-89: `check_delete_safe` reads every file). ⚠⚠ **The definition-span exclusion is NEVER folded and matches the exact declared spelling** — an exclusion removes matches, and both a folded and a case-insensitive one certified a used method `safe_to_delete` at 1.0. ⚠⚠ **It shipped 14 days after 1.108.319**, with 124 PRs merged in between: nothing in the fix loop asked whether it was time to ship (Standing lesson 09-30). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.318 count, verbatim:
+
+- ⚠ Prior (1.108.318): 10185 passed, 24 skipped, **0 failed** (10209 total; the skip count is 24 under the full tier, harness F-05).
+
+## Current State rotation (2026-10-01, release 1.108.322)
+
+The 1.108.319 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.319):** **The numbers a competitor published about us were right, and so was the refusal we had shipped over twice.** TypeScript/TSX never indexed an `abstract class` (#698), and `search_symbols` could evict an exact-name match outright on score alone; all three cut sites read one `(declaration rank, score)` key (#699). ⚠⚠ **That rank needs BOTH a kind and an owner condition** — the owner probe alone passed its suite and left the reported case unchanged. ⚠⚠ **W-16:** every per-repo cell in `README.md` and `benchmarks/README.md` derives from `benchmarks/jcm_reference.json`, gated by `tests/test_benchmark_tables_mirror_the_reference.py`. Full text: `CHANGELOG.md`; the product half verbatim in `ISSUE-HISTORY.md` (2026-09-30).
+
+The 1.108.321 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.321 — **A call written with an escape is still a call.** A Java, C# or JavaScript call can spell a name with a Unicode escape, and the compiler reads the plain name; the reference search compared raw text and the delete preflight graded the called function `safe_to_delete` at 1.0 (L-86). `check_references._fold`, the one comparison every reference match goes through, decodes escapes before it compares. ⚠⚠ **A literal escape typed into a tool input reaches disk DECODED**: build escapes from `chr(92)` and assert the backslash reached the fixture (two drafts tested the plain spelling). Also the first release under the cadence gate (STANDARD N8, `release.unreleased_max_hours`), whose own tests failed on `main` for three merges because they inherited the runner's CI event (Standing lesson 10-01). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.319 count, verbatim:
+
+- ⚠ Prior (1.108.319): 10521 passed, 24 skipped, **0 failed** (10545 total).
+
+## Current State rotation (2026-10-01, release 1.108.323)
+
+The 1.108.320 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.320):** **A member the index never saw and a caller the search never found both read as nothing there.** Class members and state indexed in the languages that dropped them (#713-#858); the delete and edit preflights stopped certifying an absence their search could not see (a dynamic import, an unsearchable name, another Unicode spelling, a differently-cased sibling, a page of test mentions). ⚠⚠ **The definition-span exclusion is NEVER folded and matches the exact declared spelling.** Shipped 14 days after .319 (Standing lesson 09-30). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-01).
+
+The 1.108.322 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.322 — **The deletion investigator reads the match the search made.** `check_references` matches import names through `_fold`; the investigator filtered those rows again with a raw `target_name in names`, so an import in another Unicode form or written with an escape was dropped and `export_not_imported` read SATISFIED over a live importer (L-90). It reads `match_type` and compares no name of its own. ⚠⚠ **Never re-compare what `check_references` matched**; `find_references` still does, at two sites (L-95). First release cut inside the 2-hour cadence (N8). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.320 count, verbatim:
+
+- ⚠ Prior (1.108.320): 13905 passed, 25 skipped, **0 failed** (13930 total).
+
+## Current State rotation (2026-10-02, release 1.108.324)
+
+The 1.108.321 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.321):** **A call written with an escape is still a call.** `check_references._fold` decodes Unicode escapes before it compares, so an escaped Java, C# or JavaScript call is a reference and the delete preflight no longer grades the called function `safe_to_delete` (L-86). ⚠⚠ **A literal escape typed into a tool input reaches disk DECODED**: build escapes from `chr(92)` and assert the backslash reached the fixture. First release under the cadence gate (STANDARD N8; Standing lesson 10-01). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-01, release 1.108.322).
+
+The 1.108.323 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.323 — **An entry point has no importer, and that does not make it dead.** The deletion investigator called an importer dead when nothing imported it, so a name imported only by `main.py`, `package.json`'s `main`, a package `__init__.py` or a test read `export_not_imported` SATISFIED (L-94). `_split_importers_by_liveness` asks `find_dead_code` and keeps no answer of its own; only a file reported at the default confidence is dead. ⚠⚠ **It inherits that tool's gaps with its roots**: an undeclared non-Python entry point (L-102) still reads dead; fix it THERE. The root-level `tests/` gap (L-101) is fixed in `[Unreleased]`: `tools/_test_paths.is_test_file` is the ONE test-file rule. Also: `registry_verify.py` retries, reads every page inside a time budget and exits `UNREADABLE` for a read that got no answer (L-96, L-98, L-99; RUNBOOK 3a). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.321 count, verbatim:
+
+- ⚠ Prior (1.108.321): 13991 passed, 25 skipped, **0 failed** (14016 total).
+
+## Current State rotation (2026-10-02, release 1.108.325)
+
+The 1.108.322 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.322):** **The deletion investigator reads the match the search made.** It re-filtered `check_references`' import rows with a raw name comparison and dropped an import spelled in another Unicode form or with an escape (L-90); it reads `match_type` now. ⚠⚠ **Never re-compare what `check_references` matched**; `find_references` still does, at two sites (L-95). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-01, release 1.108.323).
+
+The 1.108.324 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.324 — **One rule says whether a path is a test file.** Six rules under `src/` answered it and no two agreed; the dead-code pair needed a slash before `tests/`, so a root-level test file read dead and the deletion investigator called a name it imports unimported (L-101). `tools/_test_paths.is_test_file` is the one rule (Key Files). ⚠⚠ **`check_delete_safe` and `check_edit_safe` read it to DOWNGRADE a blocking verdict**: `*_test.*`, `tests.py` and `*_tests/` are kept, so a production consumer named that way reads `test_coverage_only` / `safe_to_edit` (L-104, OPEN). Forensics: `docs/workflows/LEDGER.md`; harness F-41 (the local full tier sits a few seconds under its wall-clock Floor).
+
+The `Tests:` line's 1.108.322 count, verbatim:
+
+- ⚠ Prior (1.108.322): 13994 passed, 25 skipped, **0 failed** (14019 total).
+
+## Current State rotation (2026-10-02, release 1.108.326)
+
+The 1.108.323 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.323):** **An entry point has no importer, and that does not make it dead.** The deletion investigator's `_split_importers_by_liveness` asks `find_dead_code` and keeps no answer of its own (L-94). ⚠⚠ **It inherits that tool's gaps with its roots**: an undeclared non-Python entry point (L-102) still reads dead; fix it THERE. Also `registry_verify.py` retries, pages inside a budget and exits `UNREADABLE` for an unanswered read (L-96, L-98, L-99; RUNBOOK 3a). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.324).
+
+The 1.108.325 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.325 — **A lookup that found nothing is remembered.** `config._resolve_repo_key` documented a negative cache and never wrote one, so a `repo=` matching no index listed every index (opening every `.db`) on every call, and discovery asks once per candidate FILE (#960, @ebataeva). Both answers are cached; `forget_repo_resolutions()` runs on `IndexStore.save_index`/`delete_index`, and a miss expires after `_REPO_MISS_TTL_SECONDS` for a save made by another process. ⚠⚠ **A lookup writes NOTHING if a forget overtook its listing** (`_REPO_CACHE_GENERATION`); without it a miss written after a save hid the new index's project config. ⚠ The identifier is compared raw and many root PATHS past ~256 indexes are not all held (L-105). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.323 count, verbatim:
+
+- ⚠ Prior (1.108.323): 14049 passed, 25 skipped, **0 failed** (14074 total).
+
+## Current State rotation (2026-10-02, release 1.108.327)
+
+The 1.108.324 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.324):** **One rule says whether a path is a test file.** `tools/_test_paths.is_test_file` replaced six disagreeing rules; a root-level `tests/` no longer reads dead (L-101). ⚠⚠ **The delete and edit preflights read it to DOWNGRADE a blocking verdict**: `*_test.*`, `tests.py` and `*_tests/` are kept, so a production consumer named that way reads `test_coverage_only` / `safe_to_edit` (L-104, OPEN; Key Files). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.325).
+
+The 1.108.326 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.326 — **The `semantic` extra requires a `sentence-transformers` that does not run a local model's code.** Before 5.6.0 a LOCAL model directory ran its own Python with `trust_remote_code` off (GHSA-jhr6-gm9c-rqjv), and `embed_repo` hands `embed_model` to it. The `semantic`/`all` extras floor is `>=5.6.0`; the lock holds 6.1.0 and `urllib3` 2.8.0. `tests/test_semantic_extra_floor.py` reads `pyproject.toml`, tracked pin files and the lock. ⚠⚠ **The floor is install metadata**: an upgrade without the extra named keeps an old release and the call site does not check (L-108, OPEN). ⚠ The RAG baseline is not re-run under the new pin (L-106); three sandbox `.pins` hold an old `urllib3` (L-107). ⚠ The PR gate's audit reads the RUNTIME set only. Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.324 count, verbatim:
+
+- ⚠ Prior (1.108.324): 14125 passed, 25 skipped, **0 failed** (14150 total).
+
+## Current State rotation (2026-10-04, release 1.108.328)
+
+The 1.108.325 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.325):** **A lookup that found nothing is remembered.** `config._resolve_repo_key` caches hits and misses; `forget_repo_resolutions()` runs on `IndexStore.save_index`/`delete_index` (#960, @ebataeva). ⚠⚠ **A lookup writes NOTHING if a forget overtook its listing** (`_REPO_CACHE_GENERATION`). ⚠ The identifier is compared raw (L-105, OPEN). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-02, release 1.108.326).
+
+The 1.108.327 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.327 — **A local model path is refused when the installed `sentence-transformers` would run its code.** `tools/embed_repo._refuse_local_model_on_an_old_release` raises before `SentenceTransformer(...)` when `embed_model` is an existing path and the imported release is older than 5.6.0, a pre-release of it, or unreadable (L-108; GHSA-jhr6-gm9c-rqjv). A Hub name is not refused. ⚠⚠ **The message leads with the cause and the remedy**: `FailureLedger` keeps 300 characters and a path can fill them. ⚠⚠ `search_symbols(fusion=true)` names ANY failure of its similarity channel as the body key `semantic_channel_error` (declared in the compact encoder's `_JSON_BLOBS`), labels the channel `unavailable`, and does NOT cache that answer; a zero-row one stays `absent` (the v1.108.185 ruling). ⚠ jdoc and jdata have no such check (L-109). Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.325 count, verbatim:
+
+- ⚠ Prior (1.108.325): 14142 passed, 25 skipped, **0 failed** (14167 total).

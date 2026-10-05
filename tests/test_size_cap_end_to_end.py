@@ -53,10 +53,14 @@ def _make_project(tmp_path):
     """
     project = tmp_path / "project"
     project.mkdir()
+    # The padding OPENS the file. tree-sitter's Python grammar is quadratic in
+    # a run of comment lines that follows any statement (LEDGER L-113): with the
+    # function first this file took about 11 s to parse
+    # (`evidence/l113_shapes.txt`), and this module is about the cap, not that.
     padding = "# " + ("x" * 78) + "\n"
     (project / "big_module.py").write_text(
-        "def marker_symbol():\n    return 1\n\n"
-        + padding * (OVERSIZE // len(padding) + 1),
+        padding * (OVERSIZE // len(padding) + 1)
+        + "\ndef marker_symbol():\n    return 1\n",
         encoding="utf-8",
     )
     (project / "small_helper.py").write_text(
@@ -194,4 +198,23 @@ def test_the_default_refuses_only_the_oversize_file(tmp_path):
     assert not _is_retrievable(result["repo"], "marker_symbol", tmp_path), (
         "an oversize file was indexed with NO cap raised; the 500 KB default "
         "is not being enforced"
+    )
+
+
+def test_the_oversize_fixture_opens_with_its_padding(tmp_path):
+    """Every comment line of the oversize fixture comes before its first statement.
+
+    A comment run after any statement parses in quadratic time (LEDGER L-113):
+    with the function first, this file took about 11 s to parse and six cases of
+    this module took 14 to 16 s each, which spent the full tier's wall-clock
+    margin (harness F-41). Only a run that opens the file is free, so that is
+    the shape pinned here, for indented comments as well as column-0 ones.
+    """
+    text = (_make_project(tmp_path) / "big_module.py").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    comments = [i for i, line in enumerate(lines) if line.lstrip().startswith("#")]
+    code = [i for i, line in enumerate(lines) if line.strip() and not line.lstrip().startswith("#")]
+    assert comments and code, "the fixture needs its padding and its function"
+    assert max(comments) < min(code), (
+        f"a comment on line {max(comments) + 1} follows code that starts on line {min(code) + 1}"
     )

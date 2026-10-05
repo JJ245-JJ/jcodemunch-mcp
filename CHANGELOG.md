@@ -2,6 +2,248 @@
 
 ## [Unreleased]
 
+## [1.108.328] - 2026-10-04 - a file a package.json script runs is an entry point
+
+### Fixed
+
+- **A repeat `index <subdir>` inside a git root is incremental (#961, @ebataeva).** A subdirectory of a git
+  working tree is indexed under the git root's identity and walked as `walk_prefix`; the collision
+  guard sets `_merge_with_existing` so files outside the prefix carry over, and the incremental
+  branch ran only when `_merge_with_existing` was `None`. So no repeat subdir walk could reach the
+  no-change path: every run re-parsed the whole subdirectory and saved it through the merge, with
+  `performed_incremental: false` (93 of 93 scheduled runs in the report). #504 fixed the same gate
+  for a repeat full-root walk. The incremental diff now runs for a subdir walk whose prefix is
+  already recorded in `source_roots`, with `deleted` scoped to that prefix: a carried file outside it
+  is not the subdir walk's to prune, and `incremental_save` leaves every file it is not told about
+  untouched. A first walk of a new prefix, a branch delta, and any run that turns `incremental` off
+  (a parser upgrade, an invalidated cache) still take the merge path. Measured on a copy of the
+  reporter's storage (17 indexes, 741 files under the walked prefix): 4.8 s before,
+  2.9 s after with nothing changed; with one file edited, one added and one deleted the result
+  is identical to a fresh build (file set, hashes, mtimes and symbol ids).
+
+- **A file a `package.json` script runs is an entry point.** `find_dead_code` and `get_dead_code_v2`
+  read `main`, `module`, `browser`, `exports` and `bin` from the manifest and not `scripts`, so a server
+  started by `"start": "node server.js"` has no importer by construction and was reported dead at
+  confidence 1.0, with everything only it imports reported as `all_importers_dead`. The deletion
+  investigator then read a name that server imports as imported only by an unreachable file. The reader
+  also existed twice, one copy in each tool with the same logic; it is one function in
+  `tools/_entry_points.py` now.
+  A wrong root is the worse error here, because it removes a dead file from the report with no symptom,
+  and review rounds kept finding a spelling a list of exclusions had not named. So the rule is an
+  allowlist. A script roots a file only in the form `[NAME=value] [npx | cross-env] RUNNER [flags the
+  runner's table knows] PATH`, where the runner is one of `node`, `nodejs`, `nodemon`, `ts-node`,
+  `ts-node-esm`, `ts-node-dev`, `tsx`, `bun`, `deno`, `babel-node`, `electron`, `pm2-runtime`, and the
+  path has a `/` or a `.` in it. The command text is an allowlist as well: a script is read only when
+  every character is a letter, a digit, a space or one of `_ . / : = @ , + - & | ; " ' \`, and a
+  backslash only as a path separator inside a word.
+  Flags are read per runner, because `--watch` takes a value for nodemon and none for node. A module
+  named by `--require`, `--import` or `--loader` is a root when it is a relative path. Everything else
+  declares nothing: a file named to a linter or a test runner, the arguments after the entry, a flag
+  the table does not know, a bare word (`deno lint`, `bun run build`, `node server`), any other wrapper
+  (`yarn`, `pnpm --filter`, `sudo`), a `cd` anywhere before the runner, a pipe, a redirect, a shell
+  keyword, any other character a shell interprets (`$`, `*`, `?`, `~`, `#`, `%`, a bracket, a newline)
+  anywhere in the command, and a directory that has its own `package.json` (`node .`,
+  where `main` decides). The cost is missed roots, which stay visible in the report; L-111 lists them.
+  Every wrong root the reviews found came from a fact about one runner that the reader had
+  assumed instead of measured: a flag that does or does not take the next word (`node --env-file`
+  does; `bun --config` and `deno run --v8-flags` do not), ts-node-dev given ts-node's flags, and how
+  a runner finds its script: nodemon reads options on both sides of it (`nodemon server.js --cwd
+  sub`), takes the first argument that exists, gives an extensionless one the first `-e`
+  extension; ts-node and tsx try `.js` before `.ts` and ts-node-dev the reverse; node tries `x.js`,
+  then `x.json`, then `x/index.js`, and ts-node tries `x.json` before `x.ts`; ESM resolution
+  (`ts-node-esm`, `ts-node --esm`, node's `--import` and `--loader`, tsx's `--loader`) appends nothing. So for nodemon
+  the script is the path exactly as written, with no option after it; an extensionless path that
+  names more than one indexed file, or a `.json` the runner tries first, declares nothing; and an
+  ESM preload that does not resolve as written (no extension, or not indexed) makes the command
+  declare nothing. Each shape above was run against the
+  installed runner (`evidence/l102_round8_real.txt`), and so was every flag in the tables of nodemon,
+  ts-node, ts-node-dev, tsx, babel-node, bun and deno and most of node's; electron and pm2-runtime
+  were not run. The ways left are more facts of that kind not yet run, and shell syntax made of
+  allowed characters that the lexer reads differently from a shell; two contrived commands of the
+  second kind still root a file (`true || node x.js`, `./tools/node x.js`), and L-111 records them.
+  What moves besides the two lists: `get_dead_code_v2` counts script-run files in
+  `entry_points_detected` and lists them in `_meta.package_json_entries`, so a JS repository whose only
+  roots are script-run files leaves the zero-entry-point path (`diagnostics.degraded` and its
+  `framework_warning`), and `get_repo_health`'s `dead_code_pct` follows. `check_delete_safe`, the
+  deletion investigator, `digest` and `assemble_task_context` read these tools and follow too.
+  Measured on the 11 repositories indexed on this machine that hold a `package.json`: 40 files become
+  roots, each the first argument of a runner (`evidence/l102_measure.txt`). Still reported dead, and
+  still wrong: `index.js` in a tree with no `package.json`, and a Python script with no main guard
+  (LEDGER L-111).
+
+## [1.108.327] - 2026-10-02 - a local model path is refused when the installed sentence-transformers would run its code
+
+### Security
+
+- **A local model path is refused when the installed `sentence-transformers` would run its code.**
+  1.108.326 raised the `semantic` extra's floor to 5.6.0 (GHSA-jhr6-gm9c-rqjv), and a floor is install
+  metadata: `pip install -U jcodemunch-mcp` without the extra named, or a `sentence-transformers`
+  installed directly, keeps the older release, and nothing said so. The embedding call now checks the
+  release it imported. When `embed_model` (or `JCODEMUNCH_EMBED_MODEL`) is a path that exists and the
+  release is older than 5.6.0, is a pre-release of 5.6.0, or has a version that cannot be read, the call
+  refuses before the model is constructed and names the advisory and the upgrade command. Where the
+  reason appears: `embed_repo` reports it under `error_causes`; `search_symbols(semantic=true)` returns
+  it as the error; `search_symbols(fusion=true)` still answers from its other channels and carries it
+  in a new `semantic_channel_error` field, with the verdict's semantic channel reading `unavailable`.
+  That fusion exit used to catch every failure of its similarity channel and answer `off`, the same as
+  a repository that was never embedded; any exception there is named now, not only this refusal, with
+  the message redacted and cut like `error_causes`. Two things follow. A fusion answer whose channel
+  failed is not cached, so the next call tries the channel again (a cached refusal would have been
+  replayed after the upgrade it asks for). And a fusion search that returns nothing while the channel
+  failed still reads `absent`, as it did before: its lexical and identity passes score every candidate,
+  so zero rows is a fact about the corpus. The failed channel is labelled beside that verdict.
+  An embedded repository with no provider configured still reads `off`; nothing was attempted there. A Hub
+  model name is not refused, because the bypass is in the local-directory path. A name that is a path
+  only after `~` or `$VAR` expansion is refused too, although the library would not load it from disk.
+  A fixed release behaves as before (LEDGER L-108). jdocmunch-mcp and jdatamunch-mcp have their own
+  call sites and do not have this check (L-109).
+
+## [1.108.326] - 2026-10-02 - the semantic extra requires a sentence-transformers that does not run a local model's code
+
+### Security
+
+- **The `semantic` and `all` extras require `sentence-transformers>=5.6.0`.** GHSA-jhr6-gm9c-rqjv
+  (critical): before 5.6.0, loading a LOCAL model directory bypassed `trust_remote_code` and ran the
+  custom Python inside it. `embed_repo` hands the `embed_model` config key, or `JCODEMUNCH_EMBED_MODEL`, to
+  `SentenceTransformer`, and that value may be a path. The extras declared `>=2.2.0`: a fresh install resolved to the latest
+  release, but an environment that already held an older one satisfied the requirement and kept it.
+  If you use the local `sentence-transformers` provider, upgrade it (`pip install -U
+  "jcodemunch-mcp[semantic]"`); the default install and the ONNX provider do not import it. The
+  repository's lock moves `sentence-transformers` from 5.3.0 to 6.1.0 and `urllib3` from 2.7.0 to
+  2.8.0 (GHSA-8988-9cw3-xx77, GHSA-vxq7-64xx-v4gw, GHSA-gh4c-6fx4-qh6g); neither is in the runtime
+  dependency set, and the published wheel pins neither. `benchmarks/requirements-rag-bench.txt`
+  pinned `sentence-transformers<4.0`, which required a vulnerable release; it reads `>=5.6.0,<7.0`
+  now, and the RAG baseline has not been re-run under it (LEDGER L-106). The upgrade crosses a major
+  version. What was run: `embed_repo`'s `sentence-transformers` path under 6.1.0 on Windows, Python
+  3.10, CPU, with `all-MiniLM-L6-v2` (`evidence/embed_under_6.txt`: 384-dimension vectors, the two
+  similar inputs closer than the unrelated one). That environment was a fresh resolve of 6.1.0 and
+  not the one `uv.lock` describes; the file lists the versions it installed. Linux, Python 3.11 to 3.13 and a GPU were not run, and
+  CI installs neither embedding backend. Still open: three competitive-sandbox pin files require a
+  `urllib3` before 2.8.0 (L-107; they build competitor containers, not anything a user installs), and
+  the floor is install metadata, so `pip install -U jcodemunch-mcp` without the extra keeps an older
+  `sentence-transformers` and nothing at the call site checks it (L-108).
+
+## [1.108.325] - 2026-10-02 - a lookup that found nothing is remembered
+
+### Fixed
+
+- **A repo-key lookup that found nothing was never remembered (#960, reported by @ebataeva).**
+  `config._resolve_repo_key` documented a negative cache and wrote none: a `repo=` value that matched
+  no index listed every index in storage on every call, and the listing opens every `.db`. Discovery
+  asks once per candidate file (`is_secret_file(rel_path, repo=str(root))`), so indexing a
+  subdirectory of a git root paid one full listing per file, and the bill grew with the number of
+  indexes the user has. A source root that DID match was not written back either, which is the
+  second, smaller cost in the report. Both answers are remembered now. A remembered miss is dropped
+  when this process saves or deletes an index through `IndexStore`, and expires after
+  `_REPO_MISS_TTL_SECONDS` (5 s) for a save made by another process, which nothing here is told
+  about; so a walk longer than that lists once per window, not once per file. A listing that raises
+  is not a miss and is not remembered, and neither is one that a save overtook while it was in
+  flight. `IndexStore.delete_index` also drops the keys resolved for the index, which used to
+  outlive it. The hit cache holds at least one whole listing, so a store past 256 indexes no longer
+  evicts the key it just resolved. One shape is still not held: past roughly 256 indexes, many
+  different source-root PATHS asked in turn push each other out (LEDGER L-105). Measured with 17 indexes in storage and 1,000 candidate files under a root that
+  matches none (the run is in the PR body): 1,005 listings and 40.98 s before, 1
+  listing and 4.05 s after.
+
+## [1.108.324] - 2026-10-02 - one rule says whether a path is a test file
+
+### Fixed
+
+- **A test directory at the repository root was not a test directory (LEDGER L-101).**
+  `find_dead_code` and `get_dead_code_v2` asked whether `"/tests/"` appears in a path, which needs a
+  slash BEFORE the directory, so `tests/helpers.py`, `test/helpers.py` and `__tests__/shapes.js` at
+  the root were reported dead at confidence 1.0 while `pkg/tests/helpers.py` was skipped. The deletion
+  investigator asks `find_dead_code` whether an importer is dead (L-94), so it called a name such a
+  file imports "imported by nothing live". Six rules answered the question under `src/` and no two
+  agreed: `check_delete_safe` and `find_similar_symbols` saw the root directory and missed `a_test.py`,
+  `a.spec.ts` and `__tests__/`; `get_pr_risk_profile` matched `"/test"` anywhere, which made
+  `src/testimonials.tsx` a test. There is one rule now, `tools/_test_paths.is_test_file`, and every
+  tool imports it: a directory named `tests`, `test`, `__tests__`, `__test__`, `test_*` or `*_tests`
+  at any depth, or a filename `test_*`, `*_test.*`, `conftest.py`, `tests.py`, `*_spec.rb`, or
+  `*.test.*` / `*.spec.*` with a JavaScript or TypeScript extension. Each suffix is tied to the
+  extensions that carry its convention because `check_delete_safe` and `check_edit_safe` read the
+  rule to call a use a TEST use, which downgrades a blocking verdict: `models/pod_spec.py` and
+  `docs/api_spec.yaml` are not tests, and a test holds those two tools to the verdict they give for
+  `models/pod.py`.
+
+  Every tool's answer moves on some path. For each old rule against the new one:
+  - `find_dead_code`, and `get_blast_radius`, `get_untested_symbols`, `find_unused_paths` and
+    `get_parity_map`, which import its predicate: gain the root-level directories, `__test__/`,
+    `*_tests/` and `test_*/` directories, `*_test.<any extension>`, `*_spec.rb` and `tests.py`, and
+    match without regard to case (`Tests/`, `TEST_PLAN.md`); lose `*.spec.*` and `*.test.*` outside
+    JavaScript and TypeScript.
+  - `get_dead_code_v2`: the same gains, plus `__tests__/` at any depth and `*.spec.*` / `*.test.*`,
+    which it never had.
+  - `check_delete_safe`, `check_edit_safe`, `find_similar_symbols` and the reuse audit: gain
+    `__tests__/`, `__test__/`, `*_tests/`, `*_test.*`, `*.spec.*`, `*.test.*`, `*_spec.rb` and `tests.py`; the last
+    two tools also gain `conftest.py`. ⚠⚠ Three of those spellings can name a production file:
+    `experiments/ab_test.py`, `certs/tests.py` and `experiments/ab_tests/`. A use there is a test
+    use to both preflights now, as a use in `test_utils.py` already was. `check_delete_safe` answers
+    `test_coverage_only` where it answered `external_uses_blocking`: not terminal, the file named as
+    a blocker, never `safe_to_delete`. `check_edit_safe` answers `safe_to_edit` where it answered
+    `signature_impact`, so read `test_import_count` before trusting that verdict on a repository
+    that names production files this way. Both verdicts are pinned by tests.
+  - `get_pr_risk_profile`: stops calling `testing/`, `testutil/`, `testdata/`, `pytest_*.py`, a
+    filename with `test_` after its first character (`_test_paths.py`),
+    `test.py`, `test.js`, `tests.js`, `*_spec.<not rb>`, `*.spec.*` and `*.test.*` outside JavaScript
+    and TypeScript (`x.test.d.ts` included), `my_test.config.js` and `.github/workflows/test.yml`
+    tests; gains `conftest.py`, a root-level `__tests__/`, `__test__/` and `*_tests/`.
+  - `get_file_risk` (`has_tests`, which feeds its `test_gap` score): gains `conftest.py`, `tests.py`,
+    `*.spec.*`, `*.test.*` and `*_spec.rb`; loses every name its old pattern matched in the middle
+    of a segment: a directory ending `_test` (`src/ab_test/`), `my_test.config.js`, `foo_testing.py`.
+
+  `tests/test_one_test_file_predicate.py` pins the cases in both directions and fails when a module
+  binds the names the copies used, at any depth, by a def, a class, an assignment,
+  a walrus, a loop or `with` target, an argument, an import alias (unless the name it
+  imports is itself one of those names), a `match` capture or an `except ... as`. A rule under a new name is seen only
+  through the tools that test runs: the two dead-code tools, the investigator, `get_file_risk` and
+  the two preflights. `get_repo_health`'s production-path rule answers a different question and
+  is unchanged (L-104).
+
+## [1.108.323] - 2026-10-01 - an entry point has no importer, and that does not make it dead
+
+### Fixed
+
+- **The deletion investigator called an entry point dead, and had its own answer to the question
+  (LEDGER L-94).** It split a name's
+  importers into live and dead by asking whether anything imported the importer. An entry point
+  has no importer by construction, so a name imported only by `main.py`, by the file
+  `package.json` names as `main`, by a package's `__init__.py` or by a test read
+  `export_not_imported` SATISFIED, with the evidence "Imported only by main.py, which is itself
+  unreachable". The text sweep asked the same question of the same file and agreed. `find_dead_code`
+  already answers whether a file is dead, with every root this project knows, and the investigator
+  had its own second answer beside it. It asks that tool now and keeps none: a root added there
+  later is a live importer here with no second change. Only a file the tool reports at its default
+  confidence counts as dead; one it is unsure of, or a call that errors, leaves the importer live,
+  so the change can block a delete and cannot permit one that was blocked. It inherits that tool's
+  gaps with its roots: a root-level `tests/` directory (L-101) and an undeclared non-Python entry
+  point such as `index.js` with no `package.json` (L-102) still read as dead, there and here.
+
+## [1.108.322] - 2026-10-01 - the deletion investigator reads the match the search made
+
+### Fixed
+
+- **The deletion investigator dropped an import the reference search had found (LEDGER L-90).**
+  `check_references` compares import names through one fold, so `from shapes import` of `file`
+  spelled with the fi ligature, or with a Unicode escape, is an import of `file`. The investigator
+  then filtered those rows again with a raw `target_name in names`, lost both, and answered
+  `export_not_imported` SATISFIED for a name a live file imports. The filter was only ever meant to
+  separate a named import from a specifier-stem match, and every row already states that as
+  `match_type`. It reads that field now and compares no name of its own, so a spelling the search
+  learns later reaches the investigator with no second change. That includes one it already had:
+  the fold ignores case, so `from shapes import File` now refutes for `file` as well. It can only
+  block a delete, never permit one.
+
+## [1.108.321] - 2026-10-01 - a call written with an escape is still a call
+
+A Java, C# or JavaScript call can spell a name with a Unicode escape, and the
+compiler reads it as the plain name. The reference search compared raw text,
+so it never saw such a call, and the delete preflight graded the called
+function `safe_to_delete` at confidence 1.0. This release decodes escapes in
+the one comparison every reference match goes through. It is also the first
+release cut under the release cadence: an unreleased change now fails the
+fast tier once it has waited past the Floor (STANDARD N8).
+
 ### Fixed - a call spelled with a Unicode escape is a call (LEDGER L-86)
 
 Java translates Unicode escapes before it reads a single token, so a call
