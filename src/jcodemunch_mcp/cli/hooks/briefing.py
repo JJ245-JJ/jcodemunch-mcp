@@ -44,18 +44,19 @@ def run_subagentstart() -> int:
     # Scope to the repo(s) containing the subagent's cwd when it names one:
     # hydrating + PageRanking EVERY indexed repo per spawn is minutes-scale on
     # big multi-repo boxes, and a briefing about unrelated repos is noise.
-    # No cwd (or no overlap) keeps the brief-everything fallback.
+    # No cwd keeps the brief-everything fallback. A cwd outside every indexed
+    # repo gets no briefing: unrelated repos are pure token cost per spawn.
     cwd = data.get("cwd", "")
     if isinstance(cwd, str) and cwd:
         try:
             norm_cwd = _norm_path(cwd)
-            scoped = [
+            repos = [
                 e for e in repos
                 if (sr := (e.get("source_root") or "").strip())
                 and _path_overlaps(norm_cwd, [_norm_path(sr)])
             ]
-            if scoped:
-                repos = scoped
+            if not repos:
+                return 0
         except Exception:
             logger.debug("cwd scoping failed", exc_info=True)
 

@@ -427,9 +427,9 @@ class TestSubagentCatalogMatchesSurface:
         assert "test/b" not in ctx
         assert loaded == ["a"]  # the unrelated repo was never hydrated
 
-    def test_no_cwd_overlap_briefs_everything(self, monkeypatch, tmp_path):
-        """Scoping is an optimisation, not a filter contract: a cwd outside
-        every indexed root keeps the brief-everything fallback."""
+    def test_no_cwd_overlap_briefs_nothing(self, monkeypatch, tmp_path):
+        """A cwd outside every indexed root gets no briefing: unrelated
+        repos are token cost on every spawn (local patch)."""
         a = tmp_path / "a"
         a.mkdir()
         _mock_store(monkeypatch, [
@@ -439,8 +439,7 @@ class TestSubagentCatalogMatchesSurface:
         monkeypatch.setenv("JCODEMUNCH_TOOL_SURFACE", "full")
         _, out, _ = _run(run_subagentstart, json.dumps(
             {"cwd": str(tmp_path / "elsewhere")}))
-        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        assert "test/a" in ctx and "test/b" in ctx
+        assert out == ""
 
     def test_full_surface_briefs_catalog(self, _store, monkeypatch):
         monkeypatch.setenv("JCODEMUNCH_TOOL_SURFACE", "full")
