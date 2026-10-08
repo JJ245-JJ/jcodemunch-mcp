@@ -2,6 +2,286 @@
 
 ## [Unreleased]
 
+## [1.108.333] - 2026-10-07 - the parse budget stops a slow parse again on a fresh install
+
+### Fixed
+
+- **`init`'s index line reports what the indexer did (reported by Dave).** After indexing,
+  `jcodemunch-mcp init` printed `indexed <folder> (? files, ? symbols)`. The line read
+  `files_indexed` and `symbols_indexed` from the indexer's result. No run returns the second,
+  and only a run cut short by the file cap returns the first. A full index answers `file_count` and `symbol_count`, a run that
+  re-indexes some files answers `changed`, `new`, `deleted` and `symbol_count`. So the line has
+  read `? symbols` for every index `init` ran since the command arrived (2026-04-03), and
+  `? files` for all but a capped one. It also
+  read `indexed` for a run the indexer had refused, a folder with no source file among them.
+  The line now has one form per answer (`evidence/init_index_line.txt`, the real indexer on a
+  scratch project): `indexed <folder> (2 files, 3 symbols)`,
+  `indexed <folder> (1 changed, 1 new, 1 deleted, 3 symbols)`,
+  `<folder> is up to date (nothing changed since the last index)`, and
+  `indexing failed: No source files found`. A count the result does not carry is left out, and
+  a run the file cap cut short adds `the file cap was reached, 2 of 4 files are in the index` to
+  whichever form it has.
+  Nothing had tested the line: the `init` tests replace the function that writes it. The new
+  tests run the real indexer on a project they own
+  (`tests/test_init_index_summary_reads_the_indexers_result.py`). The index itself was correct.
+  Not changed: the indexer's `warnings` (a file skipped by the parse budget, a provider skipped)
+  are still not printed by `init`. A test that reads the same absent key is LEDGER L-134.
+
+- **Three more ways a macro got the wrong docstring (LEDGER L-129, L-130, L-131).** 1.108.332
+  gave a dbt or Jinja/Twig directive the `{# comment #}` that ends directly above it; its
+  review found three inputs the rule still read wrongly, measured through `parse_file` on
+  1.108.332 and then on the fix (`evidence/l129_l131_before_after.txt`). A comment that TRAILS
+  code on its line was taken by the directive on the next line: after
+  `{% macro a() %}select 1{% endmacro %} {# end of a #}`, `b` read `end of a` and reads nothing.
+  The comment must now be first on its line, with only other comments (or a `--` lead) before it
+  there. A `{#`
+  inside an expression opened a comment: with `{{ '{#' }}` in the macro above, `second` read
+  `' }}{% endmacro %}` and the line after it, and reads `about second`. The file is read as
+  Jinja reads it, `{{ ... }}`, `{% ... %}` and `{# ... #}` left to right, each to its first
+  closer. And a whitespace-control mark was dropped whatever the dialect: `{#~approx 5 rows#}`
+  in a `.sql` read `approx 5 rows` and reads `~approx 5 rows`; `{#+1 to the offset #}` in a
+  `.twig` read `1 to the offset` and reads `+1 to the offset`. `-` is a mark everywhere, `+` in
+  Jinja and dbt, `~` in Twig. Nothing inside `{% raw %}` or `{% verbatim %}` is a delimiter, and
+  a byte-order mark or a zero-width space before a comment is not text, so a file that starts
+  with a BOM keeps its first docstring. ⚠ The docstring changes on unchanged content, so
+  `PARSER_GENERATION` is 11 and an existing index re-parses once at its next index run; no
+  symbol id moves. ⚠ What reads WORSE than on 1.108.332 (LEDGER L-132, same evidence file):
+  a stray `{{` or `{%` outside a raw block that has a later closer is one expression up to that
+  closer, so `-- wrap in {{ to call` above a documented macro, with a `{{ x }}` further down,
+  costs that macro its docstring (`doc` before, nothing now); Jinja itself refuses such a file.
+  A closer inside a string in an expression (`{{ '}}' }}`) still ends the expression there, and
+  when the leftover holds an opener (`{{ '}} {%' }}`) the documented macro below it loses its
+  docstring too.
+  Not run: a dbt, Jinja or Twig corpus.
+
+- **The parse budget stops a slow parse again on a fresh install (reported by Dave).** The
+  per-file budget (`JCODEMUNCH_PARSE_BUDGET_SECONDS`, 1.108.329) stops tree-sitter's C parse
+  through `Parser.timeout_micros`. tree-sitter 0.26.0 removed that attribute, and the
+  dependency read `tree-sitter>=0.25` with no upper bound, so an install that resolved 0.26.0
+  could no longer stop a parse. Its only sign was one line at index time: `the installed
+  tree-sitter has no Parser.timeout_micros`. Measured with this tree's source and a 0.5 s budget
+  on a 405,035-byte Python file (`evidence/tree_sitter_026.txt`): on tree-sitter 0.25.2 the file
+  is stopped after 0.54 s; on 0.26.0 after 7.06 s, when the parse had run to its end. Through
+  `index_folder` the file is named as skipped on both (`parse exceeded the 0.5s budget`), so no
+  wrong symbol was served; the time was spent. CI never saw
+  it: it installs from `uv.lock`, which pins 0.25.2, and the guard that fails on a binding
+  without the attribute runs there. The range is now `>=0.25,<0.26`, so an upgrade moves such an
+  install back to a version that can stop a parse, and
+  `tests/test_tree_sitter_range_is_the_tested_range.py` fails when the declared range admits any
+  release past the locked minor, an exclusion such as `!=0.26.0` included. The warning now names
+  the remedy. Not changed: tree-sitter
+  0.26 is not supported; its replacement for the timeout, a progress callback, crashed the
+  interpreter when it was tried on 0.25.2 (LEDGER L-133).
+
+## [1.108.332] - 2026-10-07 - a macro's docstring is the comment directly above it
+
+### Fixed
+
+- **A macro's docstring is the comment directly above it (LEDGER L-126).** A dbt macro, test,
+  snapshot or materialization, and a Jinja or Twig `macro` or `block`, takes the `{# comment #}`
+  above it as its docstring. The lookup searched for a comment from the start of the file and
+  then checked only that the text before the directive ended in `#}`, so it returned the FIRST
+  comment of the file for every directive that had one above it. In a file of documented macros
+  each macro after the first carried the first one's description, and a search by what a macro
+  does found the wrong one. Through `parse_file` on `main` and then on the fix
+  (`evidence/l126_before_after.txt`): in a `.sql` of three macros, `second` under
+  `{# about second #}` read `about first` and reads `about second`; in a `.j2` of two, `button`
+  read `renders a field` and reads `renders a button`. The comment used now is the one that ENDS
+  where the text before the directive ends, read from a table of the file's comments built once,
+  so a `#}` that closes no comment, and a comment elsewhere in the file, are nobody's docstring.
+  A `--` comment above a directive was already its own and is unchanged. The dashes of a
+  whitespace-control comment, `{#- about m -#}`, were served as part of the docstring
+  (`- about m -`); they are the delimiter's and are dropped, as are Jinja's `+` and Twig's `~`,
+  one mark per side. ⚠ The docstring changes
+  on unchanged content, so `PARSER_GENERATION` is 10 and an existing index re-parses once at its
+  next index run; no symbol id moves. Not run: a dbt or Jinja corpus, so how many stored
+  docstrings move is not measured.
+
+- **Three loops on the parse path take time proportional to the file (LEDGER L-117).** Each
+  redid whole-file work per item, in Python, after the parse. Attributing calls to their
+  enclosing function rebuilt the list of function starts for every call and then walked back
+  over every function that did not hold it; it is one sweep now. The Razor `@code {` scan
+  started again for every block and ran to the end of the file when a block never closed; the
+  blocks of a file share their scans now. The dbt and Jinja directive loop copied the file up
+  to each macro, counted its newlines, searched it for a comment and split it into lines; it
+  reads tables built once per file. Five parsers (Razor, Astro, VHDL, Verilog, COBOL) numbered
+  each symbol by counting newlines from the start of the file; they share one table. Measured
+  through `parse_file` with the parse budget off, on `main` and then on the fix
+  (`evidence/l117_before_after.txt`): a 418,340-byte Python file of 6250 functions and 20000
+  module-level calls took 63.877 s and takes 0.593 s; a 50,000-byte Razor file of 6250
+  unclosed `@code {` took 106.431 s and takes 0.031 s; a 26,890-byte `.sql` of 1000 open
+  comments and macros took 38.390 s and takes 0.089 s. Each of those three times is past the
+  default parse budget of 20 s, at which a file is skipped and named. Every field of every
+  symbol is the same before and after over 9830 files (5137 of them Razor, 285 SQL), so no
+  re-index is owed by this entry. Not changed by it: the docstring of a macro under a second
+  `{# comment #}` (LEDGER L-126, the entry above); three shapes stay superlinear and are listed
+  in LEDGER L-127. Not run: a Jinja or Twig corpus; any Python but 3.12.4 on Windows; the files
+  above at the default budget.
+
+## [1.108.331] - 2026-10-06 - a full re-index keeps the embedding metadata beside its vectors
+
+### Fixed
+
+- **A large Vue or Svelte `<script>` is indexed in time proportional to its size (LEDGER L-115).**
+  Both script walks look for the comment above each declaration, and both did it by scanning the
+  parent's children from the first one, once per declaration: a script of N top-level functions
+  cost N times N child visits, all in Python after the parse. The two scans are one shared
+  table now, built in one pass per parent node and read per declaration. Measured on a
+  368,717-byte `.vue` whose `<script>` holds 6000 functions (`evidence/l115_before_after.txt`):
+  `parse_file` took 22.674 s on 1.108.330 and takes 0.176 s; the same script in a `.svelte`
+  took 22.703 s and takes 0.122 s. The symbols are the same at each of three sizes for
+  both languages (ids, lines, signatures and docstrings, compared by digest), so no re-index is
+  owed. Since 1.108.330 such a file was skipped and named once its walk passed the parse budget
+  (20 s by default); it is now indexed. Not changed: a `/* */` comment's docstring keeps its
+  closing `*/` (LEDGER L-124). Not run: Astro and Razor script walks.
+
+- **A full re-index keeps the embedding metadata beside the vectors it describes (#522,
+  @lsg1103275794).** `save_index` cleared the whole `meta` table, and the embedding store keeps
+  `embed_dimension`, `embed_model` and `embed_task_type` there. The same save leaves
+  `symbol_embeddings` in place, so after any full save (a `PARSER_GENERATION` bump, an index
+  written by a newer version, `incremental=False`) the store held vectors with no record of the
+  model that produced them. Two things followed. A semantic `search_symbols` embeds the symbols
+  that have no vector yet, and with no stored dimension it stamped the store with the CURRENT
+  model: after a model change that left vectors of two widths under the new model's name, and
+  `embed_repo` then answered `cached` over them, which is the state #500 was shipped to stop.
+  And `embed_repo` itself, run first, re-embedded the whole corpus without naming a model
+  change, because the `task_type` row was gone too (#523). The save now deletes the index's own
+  keys and leaves the embedding store's, which carry a declared prefix the save reads. An index
+  key the new index does not write is still removed. With the model row kept, `embed_repo`
+  after a full re-index and a model change reports `rebuild_reason: embedding_model_changed`
+  and leaves one vector width. What changes for a user:
+  - `embed_repo` after a full re-index with the SAME model no longer re-embeds every symbol. It
+    embeds the symbols that have no vector, as it does after an incremental re-index. A caller
+    who used a full re-index to refresh every vector now passes `force=true`.
+  - So a vector for a symbol whose body changed, or whose symbol is gone, survives a full
+    re-index as it already survived an incremental one (LEDGER L-122).
+  - Not repaired: a store an earlier full save already stripped has no model name to recover.
+  - Not fixed here: the semantic top-up in `search_symbols` still checks no stored model before
+    it writes (LEDGER L-121).
+
+- **`embed_repo` no longer re-embeds a whole corpus for a task-type row that was never written
+  (#523, @lsg1103275794).** The gate compared the stored `embed_task_type` with the provider's
+  and read an absent row as `None`, which never equals the empty string every provider but
+  task-aware Gemini records. So a store with no such row was billed a full re-embed on its next
+  `embed_repo`, while the model gate three lines above it treats the same unknown as no change.
+  The reporter measured 9,938 symbols re-embedded through a cloud provider in about 18.2
+  minutes on a run where the model had not changed. The gate now tells three states apart:
+  - recorded and different (a Gemini task-awareness toggle): rebuilt, as before, and the
+    response now says `rebuild_reason: embedding_task_type_changed`. The empty string is a
+    recorded value, so a toggle from it is still caught; a test fails on the truthiness form
+    that would miss it.
+  - never recorded, beside a recorded dimension: unknown, and unknown is not a change. Nothing
+    is re-embedded; a symbol with no vector is embedded with the current task type beside the
+    old ones. The row stays absent, so a later toggle on that store is not detected until a
+    rebuild writes it.
+  - vectors with no embedding metadata at all: STILL rebuilt, deliberately, and the response
+    now says `rebuild_reason: embedding_metadata_missing`. Nothing records what produced those
+    vectors, and embedding beside them would stamp the store with the current model. This is
+    the store in the report (no `embed_*` rows at all), so its rebuild is NOT removed by this
+    change: what stops it recurring is the #522 entry above, which keeps a full re-index from
+    erasing those rows. A store already in that state pays one more rebuild, which writes them.
+
+## [1.108.330] - 2026-10-06 - the parse budget bounds a file's Python-side time
+
+### Fixed
+
+- **The parse budget bounds a file's Python-side time, on every route, in the thread that parses
+  (LEDGER L-116).** 1.108.329 put the tree-sitter half of `JCODEMUNCH_PARSE_BUDGET_SECONDS` inside
+  the parser and left the other half, the time spent in Python after the tree is built, to the old
+  thread wait (`parse_file_budgeted`). That wait had four defects. The first index of a folder never
+  asked it. It was wall-clock, so a file was charged for time another thread held the interpreter. Its
+  worker could not be stopped, kept running after the caller was told the file is skipped, and with
+  `JCODEMUNCH_PARSE_CACHE` set stored that file's result in the parse cache. Its message counted
+  characters where the parse limit counts bytes. The wait is gone and no second thread replaces it:
+  the parsing thread checks its own deadline at a checkpoint (`parse_budget.checkpoint()`), and
+  inside a `parse_file` call a checkpoint raises once the deadline has passed. Such a limit holds
+  only where a checkpoint is passed, and review found a loop without one twice, so the rule is over
+  the source and a test holds it there: every `for` and `while` statement in the six modules a parse
+  runs through starts with a checkpoint, every function there that can call itself passes one, and
+  building a `Symbol` is one. Three loops are exempt, each named in the test with its reason (two
+  single passes over one symbol's characters, and one loop whose every iteration enters a function
+  that starts with a checkpoint). Measured on a 441,827-byte `.vue` whose plain `<script>` holds
+  6000 functions (L-115's shape), at a 2 s budget (`evidence/l116_vue_first_index_and_reindex.txt`):
+  on 1.108.329 the first index took 13.96 s and indexed the file with no warning, and a re-index
+  after an edit skipped and named it after 4.39 s and left a thread behind; now the first index
+  takes 2.86 s and the re-index 2.85 s, both name the file, and neither starts a thread. What
+  changes for a user:
+  - A file whose Python-side work runs past the budget (default 20 s) is skipped and named on the
+    first index and at any size. The first index used to wait for it, and the wait on the other
+    routes armed only at 128 KiB. A file that was indexed slowly can now be absent and named in
+    `warnings`; raise the variable to keep it. A 50,000-byte Razor file of repeated `@code {` lines
+    held its caller 41.34 s on 1.108.329 at a 2 s budget and was not named; it is stopped and named
+    after 2.01 s (`evidence/l116_quadratic_shapes.txt`).
+  - The deadline counts the parsing thread's own time. Beside one over-budget parse in a second
+    thread, a 201,780-char file that parses in 0.32 s alone was named over a 1 s budget in 9 of 60
+    calls on 1.108.329 and in 0 of 60 now (`evidence/l116_two_threads.txt`).
+  - A stopped file writes nothing. On 1.108.329 the parse cache held 0 rows for the skipped file
+    when the caller was told and 1 row after the abandoned worker ended; now 0 and 0, with no other
+    thread started (`evidence/l116_parse_cache.txt`).
+  - The warning counts bytes on every route.
+  - `SECURITY.md` loses the "An abandoned parse worker" line added in 1.108.329. The behaviour it
+    disclosed no longer exists: indexing starts no thread to parse a file.
+  What a checkpoint cannot do is cut one slow call short. Three things pass none: a regex over the
+  whole file (also when it is the iterable of a `for`, which runs before that loop's checkpoint), a
+  comprehension, and Python code outside the six modules, which here is PyYAML's loader. Such a
+  file is named after the call returns, at the next clock read (within 64 checkpoints) or by
+  `parse_file`, which reads the deadline once more at the end. Against the old wait, on the routes and sizes where it existed
+  (`evidence/l116_one_call_shapes.txt`, a 0.5 s budget): it could not cut a regex short either,
+  because the call holds the interpreter, and a 140,000-byte EJS file of unclosed scriptlets held
+  its caller 30.62 s on 1.108.329 and 30.90 s now, named both times; an Astro and a dbt file of
+  that kind took 11.21 s and 23.76 s then, 11.16 s and 23.63 s now. It did release its caller during
+  PyYAML, with the load still running behind it: a 400,000-byte YAML list was named after 0.53 s on
+  1.108.329 and is named after 1.87 s now. That is the one measured case where a caller waits
+  longer than before. With the deadline forced to pass as the tree-sitter parse returned, on 66
+  inputs of 400 KB, with every language enabled
+  (`evidence/l116_residue_probe.txt`, a probe written by this change's reviewer; the counts are the
+  file's own summary): 55 were stopped and named, 48 of them with the forced deadline in effect and
+  none more than 0.12 s past it, 7 by the real 0.3 s budget alone; the other 11 load no parser, so
+  the forced deadline never applied and they returned. The first form of this fix checkpointed only
+  where a symbol is built, in recursions and in work-list loops, and under it a 309,590-byte Python
+  file of 6,250 functions and 20,000 module-level calls held a re-index 9.62 s at a 2 s budget and
+  was not named, where 1.108.329 released it at 2.03 s (found by review round 2; a quadratic loop
+  that attributes call sites). It is stopped and named after 2.02 s
+  (`evidence/l116_quadratic_shapes.txt`). A parser that catches the stop per item is still stopped
+  (once a file is stopped every checkpoint raises) and `parse_file` names the file. The slow loops
+  and regexes themselves are not made faster here; they are ledger rows L-117 and L-118.
+  What it costs. This package's 287 Python files, five alternating rounds, two runs each side
+  (`evidence/l116_checkpoint_cost.txt`): a mean 3.140 s and 3.115 s with the budget off against
+  2.963 s and 2.954 s on 1.108.329, and 3.198 s and 3.181 s with it on against 2.963 s and 2.958 s.
+  The dedicated walkers pay more, because their loops are short and a checkpoint is a function call
+  (`evidence/l116_checkpoint_cost_other_languages.txt`, 3000 definitions per file, median of ten
+  calls, budget on, first of two runs): C++ 0.3305 s against 0.2945 s, C 0.3656 against 0.3423,
+  TypeScript 0.4481 against 0.4181, Lua 0.1677 against 0.1466, HCL 0.1431 against 0.1180, XML
+  0.1468 against 0.1078, SQL 0.1182 against 0.1032. Building 500,000 symbols outside a parse, which
+  is what a parse-cache hit and `get_file_outline` do (loading an index builds none), took a mean
+  0.651 s against 0.396 s (`evidence/l116_symbol_build_cost.txt`). Why the slow Vue walk exists is
+  L-115, still open: `_preceding_comment` rescans every sibling for each function, 3.127 s of a
+  3.353 s parse at 3000 functions (`evidence/l115_cause_profile.txt`). Guard:
+  `tests/test_parse_budget_python_side.py`; 26 reintroduced defects of 26 fail it
+  (`evidence/l116_mutants.txt`). One test is retired, `tests/test_v1_108_182.py::
+  test_pathological_parse_raises_named_budget_error`: it replaced `parse_file` with a sleep and
+  asserted the waiting caller came back, which states the mechanism (a caller that returns) and not
+  the outcome (work that stops). Its replacement is
+  `test_a_walk_past_the_deadline_is_stopped_and_the_file_named` in the new file. What the retired
+  test held and the replacement does not, a caller released during work that passes no checkpoint,
+  is the PyYAML case above.
+
+- **A bare Python module name resolves to the script directory beside the importer (#972, @whakomatic).**
+  `from checks import verify` in `tools/run.py` names `tools/checks.py`, because a script's own
+  directory is first on `sys.path`, but `resolve_specifier` tried a bare name against the repo root
+  only. No edge was built: `find_importers` returned nothing for the module and `find_dead_code`
+  listed it as dead. The lookup now climbs from the importer through package directories to the
+  first directory without an `__init__.py`, tries the name there before the root, and stops:
+  nothing above it is treated as being on `sys.path`. Two cases build no edge, because a false edge
+  gives a file an importer it does not have and `find_dead_code` then stops reporting it with no
+  sign. A standard-library name is never the file beside the importer (`import types` next to a
+  `types.py`). A directory without an `__init__.py` under a package at any level is read as a
+  namespace sub-package, where a bare name is absolute; a real script directory kept inside a
+  package (`pkg/tests/`) gets no edge either, as before this change. These can still build no edge, as before:
+  a dotted name through a directory with no `__init__.py` (`from helpers import util`), a nested
+  test directory importing a module beside a `conftest.py` above it, and a sibling that exists
+  only as `.pyi` (LEDGER L-120).
+
 ## [1.108.329] - 2026-10-05 - the parse budget stops a slow parse
 
 ### Fixed

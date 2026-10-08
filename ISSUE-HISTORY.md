@@ -2186,3 +2186,59 @@ The 1.108.328 entry, verbatim, dropped when it was compressed to a `Prior` line:
 The `Tests:` line's 1.108.326 count, verbatim:
 
 - ⚠ Prior (1.108.326): 14177 passed, 25 skipped, **0 failed** (14202 total).
+
+## Current State rotation (2026-10-06, release 1.108.330)
+
+The 1.108.327 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.327):** **A local model path is refused when the installed `sentence-transformers` would run its code** (L-108; GHSA-jhr6-gm9c-rqjv). ⚠⚠ `search_symbols(fusion=true)` names any similarity-channel failure as `semantic_channel_error`, labels the channel `unavailable` and does not cache it; a zero-row one stays `absent`. ⚠ jdoc and jdata have no such check (L-109). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-04, release 1.108.328).
+
+The 1.108.329 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.329 — **The parse budget stops a slow parse** (L-114). `JCODEMUNCH_PARSE_BUDGET_SECONDS` is enforced inside `parse_file` (`parser/parse_budget.py`): one deadline per file, bound to every parser by `grammar_pack.get_parser`, ended by tree-sitter's own timeout; an over-budget file is skipped and named in `warnings` on every route, at any size. ⚠ Python-side time after the parse is NOT covered (L-116), and a Vue/Svelte plain `<script>` is slow there (L-115). Rules: the Env Vars row. Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.327 count, verbatim:
+
+- ⚠ Prior (1.108.327): 14213 passed, 25 skipped, **0 failed** (14238 total).
+
+## Current State rotation (2026-10-06, release 1.108.331)
+
+The 1.108.328 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.328):** **A file a `package.json` script runs is an entry point** (L-102): `tools/_entry_points.package_json_entries` reads `scripts` as an ALLOWLIST and anything else roots NOTHING (rules: Key Files `_entry_points.py`; residue L-111). Also a repeat `index <subdir>` inside a git root is incremental (#961, @ebataeva). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-05, release 1.108.329).
+
+The 1.108.330 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.330 — **The parse budget bounds a file's Python-side time** (L-116). No second thread waits on a parse: `parse_budget.checkpoint()` raises inside `parse_file` once the file's deadline (the parsing thread's own time) has passed, on every route, at any size. ⚠ One slow call (a whole-file regex, PyYAML) is not cut short (L-118), and loops are still slow BELOW the budget (L-115, L-117). Also a bare Python module name resolves to the script directory beside the importer (#972, @whakomatic; refusals and residue: L-120). Rules: the Env Vars row. Forensics: `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.328 count, verbatim:
+
+- ⚠ Prior (1.108.328): 14684 passed, 25 skipped, **0 failed** (14709 total).
+
+## Current State rotation (2026-10-07, release 1.108.332)
+
+The 1.108.329 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.329):** **The parse budget stops a slow tree-sitter parse** (L-114): the deadline lives inside `parse_file` (`parser/parse_budget.py`), bound to every parser by `grammar_pack.get_parser` and ended by tree-sitter's own timeout (rules: the Env Vars row). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-06, release 1.108.330).
+
+The 1.108.331 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.331 — **A full re-index keeps the embedding metadata beside its vectors** (#522, @lsg1103275794). `save_index` deletes the index's own `meta` keys and leaves those starting with `embedding_store.META_KEY_PREFIX`. ⚠ `embed_repo` after a full re-index no longer re-embeds everything; `force=true` does. ⚠ The semantic top-up in `search_symbols` still checks no stored model (L-121), and stale or orphan vectors survive (L-122). Also `embed_repo`'s task-type gate has THREE states (#523): `None` is never recorded and is not a change, `""` is a recorded value, and vectors with no embedding metadata at all are still rebuilt (jjg, 2026-10-06), named by `rebuild_reason`. Also a Vue or Svelte `<script>`'s comment lookup is one table per parent node, linear where it was quadratic (L-115). Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.329 count, verbatim:
+
+- ⚠ Prior (1.108.329): 14726 passed, 25 skipped, **0 failed** (14751 total).
+
+## Current State rotation (2026-10-07, release 1.108.333)
+
+The 1.108.330 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.330):** **The parse budget bounds a file's Python-side time** (L-116): `parse_budget.checkpoint()` raises inside `parse_file` once the file's deadline has passed, and every loop on the parse path starts with one (rules: the Env Vars row; residue L-117, L-118). Also a bare Python module name resolves to the script directory beside the importer (#972, @whakomatic; L-120). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-06, release 1.108.331).
+
+The 1.108.332 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.332 — **A macro's docstring is the comment directly above it** (L-126): `_PrecedingComments` (`parser/sql_preprocessor.py`) gives a dbt or Jinja/Twig directive the `{# #}` that ENDS where the text before it ends, less one whitespace-control mark per side. ⚠ `PARSER_GENERATION` is 10: a stored docstring moved on unchanged content. ⚠ Residue, each owing its own generation: L-129, L-130, L-131. Also three loops on the parse path are linear in the file (L-117; residue L-127, L-128). Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.330 count, verbatim:
+
+- ⚠ Prior (1.108.330): 14783 passed, 25 skipped, **0 failed** (14808 total).

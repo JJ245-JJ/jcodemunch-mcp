@@ -580,7 +580,19 @@ INDEX_VERSION = 17
 #   refuses an empty walk, an opaque one is disclosed. ⚠⚠ No symbol id
 #   moves; only `files.imports` changes, on UNCHANGED content, so an existing
 #   index gains the edges only by a re-parse (Standing lesson 08-05).
-PARSER_GENERATION = 9
+#
+# 10 (L-126): a dbt macro, test, snapshot or materialization, and a Jinja or
+#   Twig `macro`/`block`, takes the `{# comment #}` that ends directly above
+#   it as its docstring. Every such directive after the first documented one
+#   carried the FIRST comment of the file. ⚠⚠ No symbol id moves; only
+#   `docstring` (and a summary built from it) changes, on UNCHANGED content.
+#
+# 11 (L-129, L-130, L-131): three more rules for that docstring. A comment
+#   that trails code on its line is not the next directive's; a `{#` inside
+#   `{{ ... }}` or `{% ... %}` opens no comment; and a whitespace-control
+#   mark is dropped only for its own dialect (`+` Jinja and dbt, `~` Twig).
+#   ⚠⚠ No symbol id moves; only `docstring` changes, on UNCHANGED content.
+PARSER_GENERATION = 11
 
 
 @dataclass(frozen=True)

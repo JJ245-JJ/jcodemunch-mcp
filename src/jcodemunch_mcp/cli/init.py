@@ -1134,12 +1134,43 @@ def run_index(*, dry_run: bool = False) -> str:
 
     try:
         from ..tools.index_folder import index_folder
-        result = index_folder(path=cwd)
-        files = result.get("files_indexed", "?")
-        symbols = result.get("symbols_indexed", "?")
-        return f"  indexed {cwd} ({files} files, {symbols} symbols)"
+        return _index_summary(cwd, index_folder(path=cwd))
     except Exception as e:
         return f"  indexing failed: {e}"
+
+
+def _index_summary(cwd: str, result: dict) -> str:
+    """One line for what `index_folder` answered. It answers in four shapes:
+    a refusal (`success` false, `error`), a full index (`file_count`), a run
+    that re-indexed some files (`changed`/`new`/`deleted`, `symbol_count`) and
+    a run that found nothing changed (the three counts at 0, no symbol count).
+    A count the result does not carry is left out, never printed as `?`.
+    Any successful shape can also say the file cap cut the walk short
+    (`truncated`); the line then says how many files the index holds."""
+    if not result.get("success"):
+        return f"  indexing failed: {result.get('error') or 'the indexer gave no reason'}"
+    parts = []
+    unchanged = False
+    if "file_count" in result:
+        parts.append(f"{result['file_count']} files")
+    elif "changed" in result:
+        touched = [result.get(key, 0) for key in ("changed", "new", "deleted")]
+        unchanged = not any(touched)
+        parts.append(
+            "nothing changed since the last index" if unchanged
+            else "{} changed, {} new, {} deleted".format(*touched)
+        )
+    if result.get("symbol_count") is not None:
+        parts.append(f"{result['symbol_count']} symbols")
+    detail = ", ".join(parts)
+    if result.get("truncated"):
+        capped = "the file cap was reached, {} of {} files are in the index".format(
+            result.get("files_indexed", "some"), result.get("files_discovered", "the")
+        )
+        detail = f"{detail}; {capped}" if detail else capped
+    if unchanged:
+        return f"  {cwd} is up to date ({detail})"
+    return f"  indexed {cwd} ({detail})" if detail else f"  indexed {cwd}"
 
 
 # ---------------------------------------------------------------------------

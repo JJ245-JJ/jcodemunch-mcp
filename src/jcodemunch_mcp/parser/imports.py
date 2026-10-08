@@ -5,6 +5,7 @@ import logging
 import os
 import posixpath
 import re
+import sys
 import threading
 from collections import deque
 from pathlib import Path
@@ -2247,6 +2248,42 @@ def resolve_specifier(
                              posixpath.normpath(posixpath.join(importer_dir, specifier + e))):
                     if cand in source_files:
                         return cand
+
+    # Python bare module name: a script's own directory is `sys.path[0]`, so
+    # `import checks` in `tools/run.py` is `tools/checks.py`, ahead of the root.
+    # Climb out of packages (there a bare name is absolute) to the first plain
+    # directory and stop: only that one is treated as being on `sys.path`.
+    #
+    # ⚠⚠ Two refusals, and both err toward NO edge. A false edge gives a file
+    # an importer it does not have, so `find_dead_code` stops reporting it and
+    # nothing shows; a missed edge is the behaviour before this branch existed.
+    # (1) A standard-library name is the standard library: `import types`
+    # beside a `types.py` is not that file. (2) A directory with no
+    # `__init__.py` that has a package ANYWHERE above it is a namespace
+    # sub-package, not a script directory (`pkg/files/main.py` is imported as
+    # `pkg.files.main`), so a bare name there is absolute. Any level, not the
+    # parent alone: `pkg/types/llms/` is the same shape one directory deeper.
+    # That also refuses a real script directory kept inside a package
+    # (`pkg/tests/`, `pkg/demos/`).
+    if (
+        importer_path.endswith((".py", ".pyi"))
+        and "." not in specifier
+        and "/" not in specifier
+        and specifier not in sys.stdlib_module_names
+    ):
+        script_dir = posixpath.dirname(importer_path)
+        while script_dir and f"{script_dir}/__init__.py" in source_files:
+            script_dir = posixpath.dirname(script_dir)
+        inside_a_package = False
+        above = script_dir
+        while above and not inside_a_package:
+            above = posixpath.dirname(above)
+            init = f"{above}/__init__.py" if above else "__init__.py"
+            inside_a_package = init in source_files
+        if script_dir and not inside_a_package:
+            for c in (f"{script_dir}/{specifier}/__init__.py", f"{script_dir}/{specifier}.py"):
+                if c in source_files:
+                    return c
 
     # Absolute: try direct match first (e.g., for Go or absolute paths)
     for c in _candidates(specifier):

@@ -158,10 +158,10 @@ That's the highlight reel. The complete tour of 90+ tools, the MUNCH compact wir
 <!-- WHATSNEW:START -->
 #### What's new
 
-- **[v1.108.329](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.329)** (2026-10-05) — the parse budget stops a slow parse
-- **[v1.108.328](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.328)** (2026-10-04) — a file a package.json script runs is an entry point
-- **[v1.108.327](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.327)** (2026-10-02) — a local model path is refused when the installed sentence-transformers would run its code
-- **[v1.108.326](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.326)** (2026-10-02) — the semantic extra requires a sentence-transformers that does not run a local model's code
+- **[v1.108.333](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.333)** (2026-10-07) — the parse budget stops a slow parse again on a fresh install
+- **[v1.108.332](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.332)** (2026-10-07) — a macro's docstring is the comment directly above it
+- **[v1.108.331](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.331)** (2026-10-06) — a full re-index keeps the embedding metadata beside its vectors
+- **[v1.108.330](https://github.com/jgravelle/jcodemunch-mcp/releases/tag/v1.108.330)** (2026-10-06) — the parse budget bounds a file's Python-side time
 <!-- WHATSNEW:END -->
 
 ---
