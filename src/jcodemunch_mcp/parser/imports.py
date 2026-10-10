@@ -1,5 +1,6 @@
 """Extract import statements from source files using language-specific regex patterns."""
 
+import functools
 import json
 import logging
 import os
@@ -420,17 +421,70 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
     def literal(node) -> Optional[str]:
         return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
+    # THE one walk of the file (LEDGER L-147). `all_nodes` is every node in
+    # `ast.walk` order, so each pass below reads the list instead of walking
+    # the tree again, and `parent_of` is what a per-name question needs. The
+    # scan used to walk the whole tree once per pass, plus twice per literal
+    # table and once per loop variable: a file's cost grew with the number of
+    # names in it.
+    all_nodes: list = []
+    parent_of: dict[int, ast.AST] = {}
+    todo: deque[ast.AST] = deque([tree])
+    while todo:
+        node = todo.popleft()
+        all_nodes.append(node)
+        for child in ast.iter_child_nodes(node):
+            parent_of[id(child)] = node
+            todo.append(child)
+
+    whole: dict = {}
+    bound_under: dict[int, dict[str, int]] = {}
+
+    def _whole_file() -> dict:
+        """How often each name is bound in the file, and which names have a
+        use that is not a read: the answers `stores(tree, x)` and the old
+        per-name `_only_read` walk gave, for every name at once."""
+        if not whole:
+            bound: dict[str, int] = {}
+            not_read: set[str] = set()
+            for node in all_nodes:
+                if isinstance(node, ast.Name):
+                    if isinstance(node.ctx, (ast.Store, ast.Del)):
+                        bound[node.id] = bound.get(node.id, 0) + 1
+                    elif isinstance(node.ctx, ast.Load):
+                        parent = parent_of.get(id(node))
+                        if parent is not None and not _use_is_a_read(parent, node):
+                            not_read.add(node.id)
+                elif isinstance(node, ast.arg):
+                    bound[node.arg] = bound.get(node.arg, 0) + 1
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for a in node.names:
+                        key = a.asname or a.name.split(".")[0]
+                        bound[key] = bound.get(key, 0) + 1
+            whole["bound"], whole["not_read"] = bound, not_read
+        return whole
+
     def stores(root, name: str) -> int:
         """Bindings of ``name`` under ``root``: assignment targets and parameters."""
-        n = 0
-        for node in ast.walk(root):
-            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
-                n += 1
-            elif isinstance(node, ast.arg) and node.arg == name:
-                n += 1
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                n += sum(1 for a in node.names if (a.asname or a.name.split(".")[0]) == name)
-        return n
+        if root is tree:
+            return _whole_file()["bound"].get(name, 0)
+        # One walk per subtree asked about, whatever the number of names:
+        # a function holding sixty dynamic imports is walked once, not sixty
+        # times (review of L-147).
+        bound = bound_under.get(id(root))
+        if bound is None:
+            bound = bound_under[id(root)] = {}
+            for node in ast.walk(root):
+                if isinstance(node, ast.Name):
+                    if isinstance(node.ctx, (ast.Store, ast.Del)):
+                        bound[node.id] = bound.get(node.id, 0) + 1
+                elif isinstance(node, ast.arg):
+                    bound[node.arg] = bound.get(node.arg, 0) + 1
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for a in node.names:
+                        key = a.asname or a.name.split(".")[0]
+                        bound[key] = bound.get(key, 0) + 1
+        return bound.get(name, 0)
 
     def _frozen(node) -> bool:
         return isinstance(node, ast.Constant) or (
@@ -486,16 +540,7 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
         return isinstance(parent, (ast.Compare, ast.FormattedValue, ast.BoolOp, ast.UnaryOp, ast.If, ast.While))
 
     def _only_read(name: str) -> bool:
-        if stores(tree, name) != 1:
-            return False
-        for parent in ast.walk(tree):
-            for child in ast.iter_child_nodes(parent):
-                if (
-                    isinstance(child, ast.Name) and child.id == name
-                    and isinstance(child.ctx, ast.Load) and not _use_is_a_read(parent, child)
-                ):
-                    return False
-        return True
+        return stores(tree, name) == 1 and name not in _whole_file()["not_read"]
 
     tables = {k: v for k, v in tables.items() if _only_read(k)}
 
@@ -540,7 +585,7 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
     # also bound any other way (`m = cfg`) is not bounded by its loops.
     loop_values: dict[str, list[str]] = {}
     loop_bindings: dict[str, int] = {}
-    for node in ast.walk(tree):
+    for node in all_nodes:
         gens = []
         if isinstance(node, (ast.For, ast.AsyncFor)):
             gens = [(node.target, node.iter)]
@@ -557,7 +602,7 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
     # reading that target is bounded exactly, however else the name is used
     # outside it -- unless the comprehension itself binds the name again.
     comp_values: dict[int, list[str]] = {}
-    for node in ast.walk(tree):
+    for node in all_nodes:
         if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             continue
         for g in node.generators:
@@ -580,7 +625,7 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
     # Names bound to a package or module name.
     own_pkg = {"__name__", "__package__"}
     module_alias: dict[str, str] = {}  # alias -> absolute dotted module
-    for node in ast.walk(tree):
+    for node in all_nodes:
         if isinstance(node, ast.Import):
             for a in node.names:
                 if a.asname:
@@ -664,14 +709,26 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
     feeder_node: dict[str, int] = {}
     feeder_calls: dict[str, set[int]] = {}
     duplicate: set[str] = set()
-    for fn in ast.walk(tree):
-        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    # Only a function that holds a dynamic import can feed one. Each such
+    # call is filed under every function enclosing it, in `all_nodes` order,
+    # which is the order a walk of that function meets them: no function is
+    # walked to find its calls.
+    calls_under: dict[int, list] = {}
+    for node in all_nodes:
+        if isinstance(node, ast.Call) and _is_dynamic_import_call(node):
+            up = parent_of.get(id(node))
+            while up is not None:
+                if isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    calls_under.setdefault(id(up), []).append(node)
+                up = parent_of.get(id(up))
+    for fn in all_nodes:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or id(fn) not in calls_under:
             continue
         params = [a.arg for a in (*fn.args.posonlyargs, *fn.args.args)]
         if params and params[0] in ("self", "cls"):
             params = params[1:]  # a bound call passes them implicitly (review of #876)
-        for call in ast.walk(fn):
-            if isinstance(call, ast.Call) and _is_dynamic_import_call(call) and call.args:
+        for call in calls_under[id(fn)]:
+            if call.args:
                 arg = call.args[0]
                 if not (isinstance(arg, ast.Name) and arg.id in params):
                     continue
@@ -702,13 +759,13 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
     # this file is a direct call; `map(_load, cfg)`, `registry.add(_load)` or
     # `obj._load(x)` can hand it anything (review of #876).
     direct_uses: dict[str, int] = {}
-    for node in ast.walk(tree):
+    for node in all_nodes:
         if isinstance(node, ast.Call):
             callee = _direct_callee(node)
             if callee in feeders:
                 direct_uses[callee] = direct_uses.get(callee, 0) + 1
     all_uses: dict[str, int] = {}
-    for node in ast.walk(tree):
+    for node in all_nodes:
         if isinstance(node, ast.Name) and node.id in feeders and isinstance(node.ctx, ast.Load):
             all_uses[node.id] = all_uses.get(node.id, 0) + 1
         elif isinstance(node, ast.Attribute) and node.attr in feeders:
@@ -719,7 +776,7 @@ def _python_dynamic_imports(content: str, seen: set) -> list[dict]:
             feeders.pop(name)
     fed_calls: set[int] = set().union(*(feeder_calls[n] for n in feeders)) if feeders else set()
 
-    for call in ast.walk(tree):
+    for call in all_nodes:
         if not isinstance(call, ast.Call):
             continue
         if _is_dynamic_import_call(call):
@@ -1057,6 +1114,163 @@ def _extract_vue_imports(content: str) -> list[dict]:
             continue
         # Synthetic import edge for template-only component usage
         edges.append({"specifier": pascal, "names": [pascal]})
+
+    return edges
+
+
+# ASP.NET Web Forms directives: codebehind, master page, registered controls.
+# A `%` may appear in a value (`Title="50% off"`); stopping at the next `<%`
+# keeps an unclosed directive from scanning to the end of the file.
+#
+# Both patterns are anchored so a long run of name characters is read ONCE
+# (review of #1012). Without the `\b`, the directive name and the body both
+# match word characters, so an unclosed `<%@aaaa...` was split at every
+# position; without the lookbehind, the attribute name was retried from every
+# character of the run. Each is one C call that no parse budget interrupts:
+# 100 KB of `a` took minutes.
+_ASPX_DIRECTIVE = re.compile(r"<%@\s*(\w+)\b((?:[^%<]|%(?!>)|<(?!%))*)%>", re.DOTALL)
+_ASPX_ATTR = re.compile(r'(?<![\w:.\-])(\w[\w:.\-]*)\s*=\s*"([^"]*)"')
+
+_ASPX_MARKUP_SUFFIXES = (".aspx", ".ascx", ".master", ".asax", ".ashx", ".asmx")
+
+# The generated `X.aspx.designer.cs` half of the partial codebehind class; the
+# directive names only `X.aspx.cs`, so the designer file needs its own edge.
+_ASPX_DESIGNER_SUFFIX = ".designer.cs"
+
+
+@functools.lru_cache(maxsize=2)
+def _lowercase_paths_cached(source_files: frozenset) -> dict:
+    return {f.lower(): f for f in sorted(source_files)}
+
+
+def _lowercase_paths(source_files) -> dict:
+    if isinstance(source_files, frozenset):
+        return _lowercase_paths_cached(source_files)
+    return {f.lower(): f for f in sorted(source_files)}
+
+def _aspx_tags(content: str):
+    """Yield each `<...>` tag, which may span lines.
+
+    An inline `<%...%>` inside an attribute is skipped whole so its `%>` does not
+    end the tag. A scanner, not a regex: every regex form backtracks
+    super-linearly on unclosed or chained `<%` blocks.
+    """
+    i = 0
+    while (start := content.find("<", i)) >= 0:
+        j = start + 1
+        while True:
+            gt = content.find(">", j)
+            if gt < 0:
+                return
+            block = content.find("<%", j, gt)
+            if block < 0:
+                yield content[start:gt + 1]
+                i = gt + 1
+                break
+            close = content.find("%>", block + 2)
+            if close < 0:
+                return
+            j = close + 2
+
+
+_ASPX_RUNAT_SERVER = re.compile(r'runat\s*=\s*"server"', re.IGNORECASE)
+# The lookbehind makes `on...` the attribute's whole name: with `\b` alone,
+# `data-onclick="Foo"` and `aria-onx="Bar"` named server handlers.
+_ASPX_EVENT_ATTR = re.compile(r'(?<![\w:.\-])(on[a-z]+)\s*=\s*"([^"]*)"', re.IGNORECASE)
+# OnClient* handlers are JavaScript, not codebehind methods.
+_ASPX_CLIENT_EVENT_PREFIX = "onclient"
+# Bare method names only; databound expressions are not handler references.
+_ASPX_HANDLER_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# AutoEventWireup lifecycle methods, deliberately NOT emitted as edges: without
+# checking the codebehind defines them, they add phantom references (matched by
+# name repo-wide) that make dead code look alive.
+_ASPX_LIFECYCLE_METHODS = (
+    "Page_PreInit", "Page_Init", "Page_InitComplete", "Page_PreLoad",
+    "Page_Load", "Page_LoadComplete", "Page_DataBind", "Page_PreRender",
+    "Page_PreRenderComplete", "Page_SaveStateComplete", "Page_Unload",
+    "Page_Error", "Page_AbortTransaction", "Page_CommitTransaction",
+)
+
+
+def _aspx_handler_names(content: str) -> list[str]:
+    """Codebehind method names from `On*=` attributes on `runat="server"` tags."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in _aspx_tags(content):
+        if not _ASPX_RUNAT_SERVER.search(raw):
+            continue
+        for attr_name, value in _ASPX_EVENT_ATTR.findall(raw):
+            if attr_name.lower().startswith(_ASPX_CLIENT_EVENT_PREFIX):
+                continue
+            value = value.strip()
+            if not _ASPX_HANDLER_NAME.match(value) or value in seen:
+                continue
+            seen.add(value)
+            found.append(value)
+    return found
+
+
+def _extract_aspx_imports(content: str) -> list[dict]:
+    """Extract dependency edges from Web Forms directives and server-control handlers.
+
+    `Inherits=` is a class name, so it rides in `names` on the codebehind edge.
+    """
+    edges: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(spec: str, names: list[str], **extra) -> None:
+        spec = (spec or "").strip()
+        if not spec:
+            return
+        # `~/` is the ASP.NET application root.
+        if spec.startswith("~/"):
+            spec = spec[2:]
+        key = (spec, ",".join(names))
+        if key in seen:
+            return
+        seen.add(key)
+        edge = {"specifier": spec, "names": [n for n in names if n]}
+        edge.update(extra)
+        edges.append(edge)
+
+    handlers = None  # sorted handler names, found once
+    for m in _ASPX_DIRECTIVE.finditer(content):
+        name = m.group(1).lower()
+        attrs = {k.lower(): v for k, v in _ASPX_ATTR.findall(m.group(2))}
+
+        if name in ("page", "control", "master", "application", "webservice", "webhandler"):
+            code = attrs.get("codebehind") or attrs.get("codefile") or attrs.get("src")
+            if code:
+                _add(code, [attrs.get("inherits", "")])
+                # Emitted unconditionally; a missing designer file just won't resolve.
+                if code.lower().endswith(".cs"):
+                    _add(
+                        code[: -len(".cs")] + _ASPX_DESIGNER_SUFFIX,
+                        [attrs.get("inherits", "")],
+                        aspx_binding="designer_partial",
+                    )
+                # Handler names on a separate edge to the codebehind file, so
+                # check_references sees them without mixing into the Inherits edge.
+                # ONE such edge per file, on its first code directive: a page has
+                # one codebehind, and an edge per directive made the output
+                # directives x handlers (a 462 KB page produced 80 million names
+                # and 681 MB of edges; review of #1012).
+                if handlers is None:
+                    handlers = sorted(_aspx_handler_names(content))
+                    if handlers:
+                        _add(code, handlers, aspx_binding="markup_event")
+            master = attrs.get("masterpagefile")
+            if master:
+                _add(master, [])
+        elif name == "register":
+            src = attrs.get("src")
+            if src:
+                _add(src, [attrs.get("tagname", "")])
+        elif name == "import":
+            ns = attrs.get("namespace")
+            if ns:
+                edges.append({"specifier": ns, "names": [ns]})
 
     return edges
 
@@ -1424,6 +1638,7 @@ _LANGUAGE_EXTRACTORS = {
     "arduino": _extract_c_imports,
     "ruby": _extract_ruby_imports,
     "csharp": _extract_csharp_imports,
+    "aspx": _extract_aspx_imports,
     "php": _extract_php_imports,
     "swift": _extract_swift_imports,
     "scala": _extract_scala_imports,
@@ -2248,6 +2463,34 @@ def resolve_specifier(
                              posixpath.normpath(posixpath.join(importer_dir, specifier + e))):
                     if cand in source_files:
                         return cand
+    # Web Forms paths are relative to the markup file or to the app root (an
+    # ancestor), not the repo root: try the sibling, then each ancestor directory.
+    #
+    # A markup specifier names a FILE, extension included (`CodeBehind=`,
+    # `Src=`, `MasterPageFile=`), so it is matched as written and never
+    # through `_candidates`. With extension expansion, `<%@ Import
+    # Namespace="Utils" %>` bound an unrelated `utils.js` in any ancestor
+    # directory, and `check_delete_safe` blocked that file's deletion as final
+    # (review of #1012). A namespace resolves to nothing, here or below.
+    if not specifier.startswith((".", "/")) and importer_path.lower().endswith(
+        _ASPX_MARKUP_SUFFIXES
+    ):
+        # ASP.NET paths are case-insensitive; an exact match still wins per directory.
+        lowered = None
+        probe_dir = posixpath.dirname(importer_path)
+        while True:
+            joined = posixpath.normpath(posixpath.join(probe_dir, specifier))
+            if joined in source_files:
+                return joined
+            if lowered is None:
+                lowered = _lowercase_paths(source_files)
+            hit = lowered.get(joined.lower())
+            if hit:
+                return hit
+            if not probe_dir:
+                break
+            probe_dir = posixpath.dirname(probe_dir)
+        return None
 
     # Python bare module name: a script's own directory is `sys.path[0]`, so
     # `import checks` in `tools/run.py` is `tools/checks.py`, ahead of the root.

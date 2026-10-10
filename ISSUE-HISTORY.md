@@ -2242,3 +2242,112 @@ The 1.108.332 entry, verbatim, dropped when it was compressed to a `Prior` line:
 The `Tests:` line's 1.108.330 count, verbatim:
 
 - ⚠ Prior (1.108.330): 14783 passed, 25 skipped, **0 failed** (14808 total).
+
+## Current State rotation (2026-10-08, release 1.108.334)
+
+The 1.108.331 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.331):** **A full re-index keeps the embedding metadata beside its vectors** (#522, @lsg1103275794): `save_index` leaves the `meta` keys under `embedding_store.META_KEY_PREFIX`. ⚠ `embed_repo` after a full re-index re-embeds everything only on `force=true` (residue L-121, L-122). Also its task-type gate has THREE states (#523): `None` is never recorded and is not a change, `""` is a recorded value, and vectors with no embedding metadata are still rebuilt, named by `rebuild_reason`. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-07, release 1.108.332).
+
+The 1.108.333 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.333 — **The parse budget stops a slow parse again on a fresh install** (reported by Dave): `pyproject.toml` declares `tree-sitter>=0.25,<0.26`. ⚠⚠ **The range stops at the minor `uv.lock` pins, and `tests/test_tree_sitter_range_is_the_tested_range.py` fails when it admits a later one**: tree-sitter 0.26.0 removed `Parser.timeout_micros`, CI installs from the lock, and a user installs from the range, so the cancel guard never ran on what users got. Moving to a later tree-sitter means moving the lock first (0.26 is unsupported, L-133); the lock's `requires-dist` line is edited by hand with it. Also `init`'s index line reads the keys `index_folder` returns (`cli/init.py` `_index_summary`; it printed `? files, ? symbols`; residue L-134), and three more inputs gave a macro the wrong docstring (L-129, L-130, L-131; residue L-132). ⚠ `PARSER_GENERATION` is 11. Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.331 count, verbatim:
+
+- ⚠ Prior (1.108.331): 14800 passed, 25 skipped, **0 failed** (14825 total).
+
+## Current State rotation (2026-10-08, release 1.108.335)
+
+The 1.108.332 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.332):** **A macro's docstring is the comment directly above it** (L-126): `_PrecedingComments` (`parser/sql_preprocessor.py`) gives a dbt or Jinja/Twig directive the `{# #}` that ENDS where the text before it ends, less one whitespace-control mark per side (`PARSER_GENERATION` 10). Also three loops on the parse path are linear in the file (L-117; residue L-127, L-128). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-07, release 1.108.333).
+
+The 1.108.334 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.334 — **A semantic search writes no vector of a second model** (L-121): `stale_reason` (`storage/embedding_store.py`) is THE rule for "do the stored vectors belong with the active model", and `embed_repo` and `search_symbols`' semantic top-up both ask it; a `set_many` caller in `src/` that does not fails `tests/test_semantic_topup_checks_the_stored_model.py`. ⚠⚠ **On a reason the search does NOT rebuild** (two clients on one store would re-embed it on every search): it writes nothing and returns `semantic_store_mismatch` in the body; `embed_repo` rebuilds. ⚠ **A stamp never outlives its vectors**: `clear()` removes the dimension/model/task-type rows, a writer drops a stamp beside no vectors with `drop_orphan_stamp()` (never `clear()`), and each writer decides from `read_meta(for_writer=True)`. Residue L-135, L-136, L-137. Forensics: `CHANGELOG.md`, `docs/workflows/LEDGER.md`.
+
+The `Tests:` line's 1.108.332 count, verbatim:
+
+- ⚠ Prior (1.108.332): 14861 passed, 25 skipped, **0 failed** (14886 total).
+
+## Current State rotation (2026-10-08, release 1.108.336)
+
+The 1.108.333 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.333):** **The parse budget stops a slow parse again on a fresh install** (reported by Dave): `pyproject.toml` declares `tree-sitter>=0.25,<0.26`. ⚠⚠ **The range stops at the minor `uv.lock` pins** (`tests/test_tree_sitter_range_is_the_tested_range.py`): 0.26.0 removed `Parser.timeout_micros` and is unsupported (L-133); move the lock first, and edit its `requires-dist` line by hand. Also `init`'s index line reads the keys `index_folder` returns. ⚠ `PARSER_GENERATION` is 11. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-08, release 1.108.334).
+
+The 1.108.335 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.335 — **A read-only open reads the file the path names** (L-137): `_uri` (`storage/generation.py`) escapes `%`, `#` and `?` in the path, and `readonly_uri` and the immutable fallback both build through it. ⚠⚠ **SQLite reads the string as a URI**: under a directory named `c#proj` the open was WRITABLE on a stray file `c` and `has_any()` answered False over stored vectors. ⚠ Escape those three only, `%` first; a test database in `tmp_path` cannot express this (`tests/test_readonly_uri_quotes_the_path.py`). Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.333 count, verbatim:
+
+- ⚠ Prior (1.108.333): 14948 passed, 25 skipped, **0 failed** (14973 total).
+
+## Current State rotation (2026-10-09, release 1.108.337)
+
+The 1.108.334 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.334):** **A semantic search writes no vector of a second model** (L-121): `stale_reason` (`storage/embedding_store.py`) is THE rule, and `embed_repo` and `search_symbols`' semantic top-up both ask it (`tests/test_semantic_topup_checks_the_stored_model.py`). ⚠⚠ **On a reason the search does NOT rebuild**: it writes nothing and returns `semantic_store_mismatch`; `embed_repo` rebuilds. ⚠ A stamp never outlives its vectors (`drop_orphan_stamp()`, never `clear()`). Residue L-135, L-136. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-08, release 1.108.335).
+
+The 1.108.336 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.336 — **A fusion search scores no query against another model's vectors** (L-135): `_search_symbols_fusion` asks `stale_reason` before it calls the provider and returns `semantic_store_mismatch`, the semantic exit's body (`_stale_store_mismatch`, `_width_store_mismatch`). ⚠⚠ **A function that calls `score_all` and never `stale_reason` fails `tests/test_semantic_topup_checks_the_stored_model.py`**; the L-121 scan was keyed on `set_many`, and this exit reads. ⚠ `_embed_task_types` (`tools/embed_repo.py`) is the ONE task-type rule for the writer that stamps and the exits that compare. Residue L-139, L-140, L-141. Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.334 count, verbatim:
+
+- ⚠ Prior (1.108.334): 14997 passed, 25 skipped, **0 failed** (15022 total).
+
+## Current State rotation (2026-10-09, release 1.108.338)
+
+The 1.108.335 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.335):** **A read-only open reads the file the path names** (L-137): `_uri` (`storage/generation.py`) escapes `%`, `#` and `?`, `%` first, and every read-only open builds through it. ⚠⚠ **SQLite reads the string as a URI**: under `c#proj` the open was WRITABLE on a stray file `c`. A test database in `tmp_path` cannot express this (`tests/test_readonly_uri_quotes_the_path.py`). Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-08, release 1.108.336).
+
+The 1.108.337 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.337 — **A shutdown checkpoints a database without migrating it** (L-143): `checkpoint_db` (`storage/sqlite_store.py`) opens a PLAIN connection, checkpoints, and logs a `sqlite3.Error` at debug. ⚠⚠ **Never route it through `_connect`**: that connection creates the index schema or migrates, so a shutdown raised `no such table` on a database still being created and put index tables in `telemetry.db`. ⚠ It never raises; it runs from `finally` blocks (`tests/test_store_close_only_checkpoints.py`). Residue L-144. Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.335 count, verbatim:
+
+- ⚠ Prior (1.108.335): 15038 passed, 25 skipped, **0 failed** (15063 total).
+
+## Current State rotation (2026-10-09, release 1.108.339)
+
+The 1.108.336 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.336):** **A fusion search scores no query against another model's vectors** (L-135): `_search_symbols_fusion` asks `stale_reason` before it calls the provider and returns `semantic_store_mismatch`. ⚠⚠ **A function that calls `score_all` and never `stale_reason` fails `tests/test_semantic_topup_checks_the_stored_model.py`.** ⚠ `_embed_task_types` (`tools/embed_repo.py`) is the ONE task-type rule. Residue L-139, L-140, L-141. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-09, release 1.108.337).
+
+The 1.108.338 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.338 — **A .NET build tree and a NuGet restore tree stay out of the index** (#1001, @outoftheblue9): `obj/`/`bin/` are pruned only beside a `.csproj`/`.vbproj`/`.fsproj`, `packages/` only when a child holds its own `.nupkg`, `.vs/` always (`security.py`). ⚠⚠ **A solution file is NOT a marker**: a root `.sln` pruned a hand-written `bin/deploy.py` and `search_text` certified the absence. ⚠ Both rules prune on evidence the writer left, never on the name. `index_file` applies neither and `index_repo` only `.vs/` (L-142). Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.336 count, verbatim:
+
+- ⚠ Prior (1.108.336): 15056 passed, 25 skipped, **0 failed** (15081 total).
+
+## 2026-10-09: a cold-index Floor failure read as runner noise (#1005, LEDGER L-146 and L-147)
+
+The nightly of 2026-10-09 failed `index.cold_self_seconds` at 5.207 against a Floor of 5.2. Triage compared readings BETWEEN jobs, saw
+about 2x between runners, closed #1005 as runner variance and drafted a loosening of the Floor, twice. The second review of that draft
+divided each job's cold-index reading by another timing of the same job; over the 24 recorded CI runs
+(`harness/results/self_latency_ci_runs_*.json`) the ratio steps 1.29x to 1.36x between the nightlies of 2026-09-29 and 2026-09-30 with
+no overlap. #1005 was reopened with a correction and the loosening dropped (jjg). The cause was the dynamic-import scan of #876
+walking a file's syntax tree per name and per pass; fixed in #1011, released as 1.108.339. A local timing of the suspect commit on a fixed
+older copy of `src/` had shown too little to see: the cost was the new code on the new files. The Standing lesson dated 10-09 is the
+rule this earned.
+
+## Current State rotation (2026-10-10, release 1.108.340)
+
+The 1.108.337 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.337):** **A shutdown checkpoints a database without migrating it** (L-143): `checkpoint_db` (`storage/sqlite_store.py`) opens a PLAIN connection and never raises. ⚠⚠ **Never route it through `_connect`**, which creates the index schema or migrates. Residue L-144. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-09, release 1.108.338).
+
+The 1.108.339 entry, verbatim, dropped when it was compressed to a `Prior` line:
+
+- **Version:** 1.108.339 — **The dynamic-import scan walks a Python file once** (L-147, #1005): `_python_dynamic_imports` (`parser/imports.py`) reads ONE node list with parent links. ⚠⚠ **Never answer a per-name question there with `ast.walk(tree)` or a pass over `all_nodes`**; `tests/test_dynamic_import_scan_walks_the_tree_once.py` counts visits and calls per node. ⚠ Output unchanged, no `PARSER_GENERATION` bump. Not recovered: a tenth of a cold index against pre-#876. Residue L-148, L-149. Forensics: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.337 count, verbatim:
+
+- ⚠ Prior (1.108.337): 15063 passed, 25 skipped, **0 failed** (15088 total).

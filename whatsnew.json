@@ -1,29 +1,29 @@
 {
-  "current": "1.108.333",
+  "current": "1.108.340",
   "entries": [
     {
-      "version": "1.108.333",
-      "date": "2026-10-07",
-      "title": "the parse budget stops a slow parse again on a fresh install",
-      "summary": "A fresh install could resolve tree-sitter 0.26.0, which removed the attribute the per-file parse budget uses to stop a slow parse; indexing then printed 'the installed tree-sitter has no Parser.timeout_micros' and a slow file ran to its end. The dependency is now tree-sitter>=0.25,<0.26, so upgrading jcodemunch-mcp restores the stop. Also: after indexing, init printed '? files, ? symbols'; it now prints the real counts, and says 'indexing failed' with the reason when the indexer refused. And three more inputs gave a dbt or Jinja/Twig macro the wrong docstring; an existing index re-parses once at its next index run. Thanks to Dave for the report."
+      "version": "1.108.340",
+      "date": "2026-10-10",
+      "title": "ASP.NET Web Forms is indexed, and a handler wired in markup is referenced",
+      "summary": "ASP.NET Web Forms markup (.aspx, .ascx, .master, .asax, .ashx, .asmx) is indexed as its own language, `aspx`, and ten XML-shaped .NET files (.csproj, .resx, .xaml and others) as `xml`. An event handler wired only in markup (OnClick=\"btnSave_Click\") now reads as referenced, and pages, handlers and project files are roots, so the dead-code tools stop offering live Web Forms code for deletion. Contributed by @outoftheblue9. An existing C# index that holds one of the new file types over the size cap now reads as an inadequate corpus until `max_file_size` covers the file."
     },
     {
-      "version": "1.108.332",
-      "date": "2026-10-07",
-      "title": "a macro's docstring is the comment directly above it",
-      "summary": "A dbt macro, test, snapshot or materialization, and a Jinja or Twig macro or block, takes the {# comment #} above it as its docstring. In a file of documented macros every one after the first carried the FIRST comment of the file, so a search by what a macro does found the wrong macro. Each now takes the comment that ends directly above it, and the marks of a whitespace-control comment ({#- ... -#}) are no longer part of the text. An existing index re-parses once at its next index run to pick this up. Also: three loops on the parse path take time proportional to the file; a Python file of 6250 functions and 20000 module-level calls that took 63.877 s to index takes 0.593 s, with the same symbols."
+      "version": "1.108.339",
+      "date": "2026-10-09",
+      "title": "the dynamic-import scan walks a Python file once",
+      "summary": "Indexing a Python file that holds a dynamic import walked the file's whole syntax tree once or twice per literal table, once per loop variable and once per pass, a cost added in 1.108.320. The file is now walked once. A cold index of this project's own source is about an eighth faster on Linux, and the edges the scan returns are unchanged, so no index needs rebuilding. About a tenth of a cold index against the code before 1.108.320 is not recovered."
     },
     {
-      "version": "1.108.331",
-      "date": "2026-10-06",
-      "title": "a full re-index keeps the embedding metadata beside its vectors",
-      "summary": "A full re-index cleared the table where the embedding store records which model, dimension and task type produced its vectors, and kept the vectors. A semantic search after a model change could then leave vectors of two widths under the new model's name, and embed_repo re-embedded the whole corpus after every full re-index. The save now keeps the embedding store's rows, so a model change after a full re-index is detected and named, and embed_repo embeds only the symbols that have no vector. Pass force=true to refresh every vector (#522, @lsg1103275794). Also: a large Vue or Svelte <script> is indexed in time proportional to its size; a 6000-function script that took over 20 seconds to parse now takes a fraction of a second, with the same symbols. Also: embed_repo no longer re-embeds a corpus for a task-type row that was never written, and names the reason when it does rebuild (#523, @lsg1103275794)."
+      "version": "1.108.338",
+      "date": "2026-10-09",
+      "title": "a .NET build tree and a NuGet restore tree stay out of the index",
+      "summary": "A .NET project with no .gitignore indexed its build output as source. obj/ and bin/ are now pruned when a .csproj, .vbproj or .fsproj sits beside them (a solution file alone is not enough), .vs/ is always skipped, and a packages/ directory is pruned when a child holds the .nupkg NuGet wrote. Config keys skip_msbuild_output and skip_nuget_packages turn the two marker rules off. index_file applies neither rule and index_repo applies only the .vs/ skip. Contributed by @outoftheblue9 (#1001)."
     },
     {
-      "version": "1.108.330",
-      "date": "2026-10-06",
-      "title": "the parse budget bounds a file's Python-side time",
-      "summary": "1.108.329 put the tree-sitter half of JCODEMUNCH_PARSE_BUDGET_SECONDS inside the parser and left the Python-side half to a thread wait that the first index of a folder never asked, that charged a file for another thread's time, and whose worker kept running after the file was reported skipped. The wait is gone. The parsing thread checks its own deadline at checkpoints, so a file whose Python-side work runs past the budget (default 20 s) is skipped and named in the index result's warnings on every indexing route and at any size, and no thread is left behind. One slow call (a regex over the whole file, PyYAML's loader) is not cut short; the file is named when the call returns. Also: a bare Python module name resolves to the script directory beside the importer (#972, @whakomatic)."
+      "version": "1.108.337",
+      "date": "2026-10-09",
+      "title": "a shutdown checkpoints a database without migrating it",
+      "summary": "At shutdown the server compacts the WAL of every database in its storage directory. It opened each one through the indexer's connection, which creates the index schema or runs the version migrations. A database still being created raised no such table out of the shutdown, any other SQLite file there (telemetry.db) gained the index tables, and a file that is not a database stopped the loop. The checkpoint now opens a plain connection and never raises. Index tables an earlier shutdown created in another database stay there."
     }
   ]
 }

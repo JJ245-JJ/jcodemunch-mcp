@@ -54,6 +54,51 @@ _EMBED_MODEL_KEY = "embed_model"
 _EMBED_TASK_TYPE_KEY = "embed_task_type"
 
 
+#: Why stored vectors may not be extended or scored under the active model.
+#: `embed_repo` reports the same strings as `rebuild_reason`.
+STALE_MODEL_CHANGED = "embedding_model_changed"
+STALE_TASK_TYPE_CHANGED = "embedding_task_type_changed"
+STALE_METADATA_MISSING = "embedding_metadata_missing"
+
+
+def stale_reason(stored: Optional[dict], model: str, task_type: str) -> Optional[str]:
+    """Why vectors described by ``stored`` do not belong with ``model``, or None.
+
+    ``stored`` is `EmbeddingStore.read_meta()`. THE one rule for both vector
+    writers: `embed_repo` rebuilds on a reason, and the semantic top-up in
+    `search_symbols` writes nothing (LEDGER L-121: the rule lived inline in
+    `embed_repo` only, so the top-up wrote a second model's vectors beside the
+    first's). A function that calls `set_many` and not this fails
+    `tests/test_semantic_topup_checks_the_stored_model.py`.
+    The fusion exit of `search_symbols` writes nothing and asks too, before it
+    scores a query vector against the stored ones (LEDGER L-135); a function
+    that calls `score_all` and not this fails the same file.
+
+    ⚠ Unknown is NOT a change (#500). An unreadable store (``None``), a store
+    with no model name, and an empty ``model`` all answer None: forcing a
+    rebuild on those bills a full re-embed for a model that may be identical.
+
+    ⚠⚠ The task type has three states (#523). An absent row is never recorded
+    and is not a change; ``""`` IS a recorded value, written by every provider
+    but task-aware Gemini, so a truthiness test misses a real toggle from it.
+
+    ⚠ Vectors with no metadata at all (no dimension either) are stale: nothing
+    says what produced them, and the next write would stamp the store with the
+    active model over them. A full re-index left stores so before #522.
+    """
+    if not stored or not stored.get("has_vectors"):
+        return None
+    stored_model = stored.get("model")
+    if stored_model and model and stored_model != model:
+        return STALE_MODEL_CHANGED
+    stored_task_type = stored.get("task_type")
+    if stored_task_type is None:
+        return STALE_METADATA_MISSING if stored.get("dimension") is None else None
+    if stored_task_type != task_type:
+        return STALE_TASK_TYPE_CHANGED
+    return None
+
+
 def _encode_embedding(vec: list[float]) -> bytes:
     """Serialise a float list to bytes (float32, native byte order)."""
     return array.array("f", vec).tobytes()
@@ -147,6 +192,65 @@ class EmbeddingStore:
         except Exception:
             logger.debug("EmbeddingStore.get_model failed", exc_info=True)
             return None
+
+    def read_meta(self, for_writer: bool = False) -> Optional[dict]:
+        """What built the stored vectors, read WITHOUT touching the file.
+
+        ``{"has_vectors", "dimension", "model", "task_type"}``; an absent row is
+        ``None``, and ``task_type`` keeps ``""`` apart from absent (#523).
+        Returns ``None`` when the store could not be read, which is unknown and
+        never "nothing stored".
+
+        ⚠ `get_dimension`/`get_model`/`get_task_type` open a read-WRITE
+        connection, and `_connect` runs a PRAGMA and a CREATE TABLE on each, so
+        they move the .db mtime. A search calls this on every semantic query,
+        before its scan; a getter there makes the search's own movement check
+        report a rebuild the search caused (see `get_all_readonly`).
+
+        ⚠ ``for_writer=True`` is for a caller about to write anyway
+        (`embed_repo`), and reads over the read-write connection that caller
+        writes with. Unknown is not a change, so a writer left with ``None``
+        skips the model-change rebuild and writes a second width beside the
+        first; it must not be blind where it can write. The read-only open has
+        ways to fail that the read-write one does not (LEDGER L-137: under a
+        path holding ``#`` it opens another, empty file, and the read fails).
+        """
+        try:
+            conn = self._connect() if for_writer else _generation.connect_readonly(self._db_path)
+        except Exception:
+            logger.debug("EmbeddingStore.read_meta could not open %s",
+                         self._db_path, exc_info=True)
+            return None
+        try:
+            try:
+                has_vectors = conn.execute(
+                    "SELECT 1 FROM symbol_embeddings LIMIT 1"
+                ).fetchone() is not None
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc).lower():
+                    raise
+                has_vectors = False
+            rows = dict(conn.execute(
+                "SELECT key, value FROM meta WHERE key IN (?, ?, ?)",
+                (_EMBED_DIM_KEY, _EMBED_MODEL_KEY, _EMBED_TASK_TYPE_KEY),
+            ).fetchall())
+            try:
+                dim = int(rows[_EMBED_DIM_KEY])
+            except (KeyError, TypeError, ValueError):
+                # One unreadable row is one unknown; the model and task type
+                # beside it still decide.
+                dim = None
+            return {
+                "has_vectors": has_vectors,
+                "dimension": dim,
+                "model": str(rows[_EMBED_MODEL_KEY]) if rows.get(_EMBED_MODEL_KEY) else None,
+                "task_type": rows.get(_EMBED_TASK_TYPE_KEY),
+            }
+        except Exception:
+            logger.debug("EmbeddingStore.read_meta failed", exc_info=True)
+            return None
+        finally:
+            conn.close()
 
     def get_task_type(self) -> Optional[str]:
         """Return stored embedding task type, or None if not set."""
@@ -520,12 +624,54 @@ class EmbeddingStore:
         finally:
             conn.close()
 
+    def drop_orphan_stamp(self) -> None:
+        """Remove the dimension, model and task type rows IF no vector is stored.
+
+        For a writer that found a stamp beside no vectors (a store emptied
+        before `clear()` removed the rows). ⚠ One statement, conditioned in
+        SQL on the vectors table being empty, on the read-write connection:
+        a writer deciding from an earlier reading and then calling `clear()`
+        deleted vectors another client had written in between, and vectors a
+        read-only reading of the wrong file had not seen (LEDGER L-121,
+        review round 6; L-137). This cannot delete a vector.
+        """
+        conn = self._connect()
+        try:
+            conn.execute(
+                "DELETE FROM meta WHERE key IN (?, ?, ?) "
+                "AND NOT EXISTS (SELECT 1 FROM symbol_embeddings)",
+                (_EMBED_DIM_KEY, _EMBED_MODEL_KEY, _EMBED_TASK_TYPE_KEY),
+            )
+        except sqlite3.OperationalError as exc:
+            # A database with no `meta` table has nothing recorded.
+            if "no such table" not in str(exc).lower():
+                raise
+        finally:
+            conn.close()
+
     def clear(self) -> None:
-        """Delete all stored embeddings (used by embed_repo with force=True)."""
+        """Delete all stored embeddings and what is recorded about them.
+
+        Used by embed_repo with force=True. ⚠ The dimension, model and task
+        type go with the vectors: a rebuild whose every batch then failed left
+        an empty store stamped with the OLD model, the next writer wrote the
+        new model's vectors under that stamp, and a reader of the stamp
+        (`stale_reason`) then refused vectors the active model had built
+        (LEDGER L-121, review round 3). An empty store has no stamp.
+        """
         conn = self._connect()
         try:
             conn.execute("BEGIN")
             conn.execute("DELETE FROM symbol_embeddings")
+            try:
+                conn.execute(
+                    "DELETE FROM meta WHERE key IN (?, ?, ?)",
+                    (_EMBED_DIM_KEY, _EMBED_MODEL_KEY, _EMBED_TASK_TYPE_KEY),
+                )
+            except sqlite3.OperationalError as exc:
+                # A database with no `meta` table has nothing recorded.
+                if "no such table" not in str(exc).lower():
+                    raise
             conn.execute("COMMIT")
             self._invalidate_matrix()
         except Exception:

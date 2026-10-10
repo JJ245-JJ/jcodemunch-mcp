@@ -2,6 +2,328 @@
 
 ## [Unreleased]
 
+## [1.108.340] - 2026-10-10 - ASP.NET Web Forms is indexed, and a handler wired in markup is referenced
+
+### Fixed - a Web Forms handler wired in markup is referenced, and markup reaches the file graph
+
+Web Forms binds codebehind methods in ways the AST call graph cannot see, so
+every such method read as uncalled. `On*=` on a `runat="server"` control
+(matched case-insensitively -- real markup mixes `OnClick` and `onclick`,
+and ASP.NET honours both, including after an inline `<%# ... %>` attribute
+value) now emits an import edge naming the handler; `OnClient*` is excluded because it is
+JavaScript, and a tag without `runat="server"` names no server method,
+since a fabricated reference makes dead code look live. ⚠ That gate governs
+the EDGE only: `check_references` and `get_dead_code_v2` also match content,
+so a method named in a client-side `onclick=` still reads as referenced. The codebehind class is
+`partial` across `X.aspx.cs` and `X.aspx.designer.cs` while the directive
+names only the first, so a `designer_partial` edge covers the generated half,
+whose control fields had no incoming edge. None of it reached the file
+graph before, because `resolve_specifier` had no branch for markup
+importers: `CodeBehind="X.aspx.cs"` names a SIBLING and `~/Site.Master` a
+path from the APPLICATION root, so every codebehind and master-page edge
+resolved to None and `find_importers`, `get_blast_radius` and
+`get_dependency_graph` were blind to markup. Resolution now tries the
+sibling, then each ancestor, case-insensitively as ASP.NET does
+(`codebehind="Site.master.cs"` names `Site.Master.cs`), gated on the
+IMPORTER's extension like the Python-relative (#423) and Gleam branches. A
+markup specifier is matched as written, extension included, so
+`<%@ Import Namespace="Utils" %>` resolves to no file. ⚠ The ancestor walk
+applies to a bare name as well as to `~/`: `CodeBehind="X.aspx.cs"` with no
+sibling of that name binds an ancestor directory's `X.aspx.cs`. ⚠
+`AutoEventWireup` lifecycle names (`Page_*`) are deliberately NOT
+synthesized: most such names have no definition in a typical solution, and
+each would have gained one phantom reference per page, inherited by any unrelated
+symbol sharing the name -- a false-alive, the worse direction for a deletion
+preflight. Every name emitted comes from text in the file being parsed.
+`aspx_binding` on each edge is provenance only; no consumer reads it.
+
+`find_dead_code` and `get_dead_code_v2` treat the files IIS or MSBuild invoke
+themselves (`.aspx`, `.ashx`, `.asmx`, `Global.asax`, project files, `.nuspec`,
+`Directory.Build.*`) as roots: nothing imports them by design, so they were
+reported `zero_importers` at 1.0 and their codebehind `all_importers_dead`.
+Files reached through edges the index does not carry are capped at
+`UNPROVEN_CEILING` rather than proven dead, named in `confidence_capped_by`
+and counted in `<reason>_withheld`: `build_consumed` for project-file items
+(`.resx`, `.xaml`, `.xsd`, `.wsdl`, other `.props`/`.targets`), and
+`runtime_loadable` for an unreferenced `.ascx`/`.master`, which
+`LoadControl`, a CMS's stored control path or `MasterPageFile` set in code can
+load by path. A codebehind whose only importer is capped inherits the cap, and
+`get_dead_code_v2` leaves signal 1 undecided for both and counts them under a
+new `unseen_consumer_boundary` key (`files`, `symbols`, `files_by_kind`, `note`),
+apart from `dynamic_import_boundary`, which names dynamic imports only. `check_delete_safe`
+answers `dynamic_import_boundary` for a symbol in a capped file instead of
+`safe_to_delete`. A `<%@ Register %>`ed control is an ordinary edge and stays
+live. A `%` in a directive value (`Title="50% off"`) no longer drops the
+directive. ⚠ `get_repo_health`'s coupling count is unchanged: it excludes only
+a detected framework profile's roots, and widening that needs its own
+measurement, so pages and project files count as unstable modules on a .NET
+repo until then. ⚠ Known limitation: a page's edge to its codebehind is
+file-level, so `check_delete_safe` blocks deleting a genuinely unused method in
+a live codebehind (it errs toward keeping code).
+
+### Added - ASP.NET Web Forms is indexed as its own language, and XML-shaped .NET files as `xml`
+
+`.aspx`/`.ascx`/`.master`/`.asax`/`.ashx`/`.asmx` were absent from
+`LANGUAGE_EXTENSIONS`, so Web Forms markup never entered the corpus while its
+codebehind indexed fine -- which made the failure selective and confident
+rather than obviously missing. Live event handlers wired only in markup
+(`OnClick="btnSave_Click"`) reported `is_referenced=false`, and
+`find_dead_code` offered every one for deletion; indexing the markup makes
+those handler names resolve, because `check_references` searches content. Handler
+names are deliberately NOT emitted as symbols: the attribute REFERENCES a
+definition that lives in the codebehind. `aspx` is a separate language
+rather than a `razor` alias, because `language=` is a user-facing filter a
+Web-Forms-to-Blazor migration needs to split, and folding in would register
+import extraction under the `razor` key and move output for every existing
+`.cshtml`/`.razor` user. `<%@ %>` directives (`CodeBehind`, `CodeFile`, `Src`,
+`MasterPageFile`, `Register`, `Import`) become import edges, and
+`plan_refactoring` gets its own Web Forms import-synthesis arm, since the
+razor arm's `@import '...'` is not Web Forms syntax. Ten XML-shaped .NET
+extensions (`.xaml`, `.csproj`, `.vbproj`, `.fsproj`, `.props`, `.targets`,
+`.resx`, `.nuspec`, `.xsd`, `.wsdl`) map onto the existing `xml` language,
+adding no new language. ⚠⚠ **This changes answers on an existing C# repository
+that holds one of these files over `max_file_size`** (a `.resx` with an embedded
+image is the common case): the file is now `too_large`, a withheld reason, so the
+corpus reads as inadequate and `find_dead_code` and `check_delete_safe` withhold
+verdicts they gave before (`corpus_inadequate`) until `max_file_size` covers the
+file. The direction is the careful one. ⚠ `.config` and `.settings` are deliberately NOT
+mapped: `web.config` and a `Settings.settings` holding a connection-string
+setting both carry plaintext credentials, `is_secret_file()` is False for
+them and `redact_dict` makes zero substitutions on an ADO.NET connection
+string; they are mapped once connection strings are redacted, not before, and a test
+pins that for both. Fixtures are real MIT-licensed Microsoft code pinned by commit SHA
+(`tests/fixtures/dotnet/SOURCES.md`); the declarative-handler fixture is
+hand-written and says so.
+
+Both entries above are @outoftheblue9's work (#1012). The changes below came
+from three rounds of review and are the maintainers'. Three patterns cost
+quadratic time in one call no parse budget interrupts: the directive and
+attribute patterns are anchored, so a long run of name characters is read once
+(an unclosed `<%@aaaa...` of 100 KB took minutes), and the inline server script
+is found by a scan instead of one pattern (115 s at 500 KB). A namespace
+import resolves to no file. A page emits one handler edge, on its first code
+directive, where an edge per directive made the output directives times
+handlers. An attribute whose name only ends in an event name
+(`data-onclick`) names no handler. `get_dead_code_v2` names the .NET reason
+under its own key. And the `runat="server"` gate has a test that fails
+without it (`tests/test_aspx_review_guards.py`).
+
+## [1.108.339] - 2026-10-09 - the dynamic-import scan walks a Python file once
+
+### Fixed
+
+- **Indexing a Python file that holds a dynamic import no longer walks the file once per table
+  (LEDGER L-147).** The dynamic-import scan added in 1.108.320 (#876) has to know two things about
+  names in the file: whether a module-level literal table is only ever read, and whether a loop
+  variable is bound only by its loops. It answered each by walking the file's whole syntax tree,
+  once or twice per name. It then walked the tree again for each of its passes, and walked a
+  function once per dynamic import inside it. In a file with 64 literal tables each node was
+  visited 199 times, and with 4 tables 19 times (`evidence/l147_walks.txt`). On this repository's
+  own source the walks cost about an eighth of a cold index: on Linux, 2.337 s and 2.329 s before
+  this fix against 2.072 s and 2.038 s after it (`evidence/l147_linux_timing.txt`). The nightly's
+  cold-index Floor caught it ten days later on a slow runner (#1005); our first reading of that
+  failure called it runner variance, which was wrong, and the issue carries the correction.
+  The file is now walked once, into a list with parent links, and every pass reads the list. A
+  function whose parameter feeds an import, and a comprehension that holds one, is walked once
+  more, however many imports it holds; a comprehension with several literal generators is still
+  walked once per generator. In the seven shapes the test builds each node is visited between 1.00
+  and 2.23 times at 64 names, and the test fails when any one of the removed walks is put back, or
+  when the whole-file table is rebuilt per question (`evidence/l147_mutants.txt`). It does not see
+  a per-name loop over the node list that calls no function per node. What the scan returns is
+  unchanged: identical output on 892 real Python files (this repository, its environment and a
+  Python installation's library), on 53 hand-written cases and on 20,000 generated ones
+  (`evidence/l147_equivalence.txt`), so no index needs rebuilding.
+  Not recovered, and not attributed: the same cold index is still about a tenth slower than the
+  code before #876, which reads 1.875 s and 1.851 s on the same files. 34 commits touch `src/`
+  between the two. The scan still parses each such file a second time, with Python's own parser;
+  what that costs on Linux was not measured.
+
+## [1.108.338] - 2026-10-09 - a .NET build tree and a NuGet restore tree stay out of the index
+
+Both entries below are @outoftheblue9's work (#1001). An index built before this release keeps the files these rules now prune
+until its next full `index_folder` run.
+
+### Added - MSBuild `obj/`/`bin/` and Visual Studio's `.vs/` are pruned from the walk
+
+A .NET project without a `.gitignore` indexed its build output as source.
+Both `obj/` and `bin/` routinely hold COPIES of real code -- a web publish
+writes `obj/Release/Package/PackageTmp/` and
+`obj/Release/AspnetCompileMerge/Source/` -- so the same symbols indexed twice
+and the copies competed with the originals in ranking. `obj/`/`bin/` are
+pruned only when a `.csproj`/`.vbproj`/`.fsproj` sits BESIDE them, because
+`bin/` holds committed hand-written entrypoints in Node, Ruby and Go and a
+name-only rule would delete real source; the marker check reuses the
+`filenames` `os.walk` already holds, so it costs no IO. ⚠ A solution file
+(`.sln`/`.slnx`) is NOT a marker: MSBuild writes output beside the PROJECT,
+and a solution root's `bin/` can hold a hand-written script. Counting it
+would prune that script with no warning and let `search_text` certify an
+absence over it; a missed prune only indexes duplicates, so the marker errs
+toward indexing. `.vs/` (binary design-time caches
+and `*.dtbcache.json`) joins `_SKIP_DIRECTORY_NAMES` unconditionally, since
+nothing in it is hand-written; `.idea/` and `.vscode/` deliberately do not.
+⚠ This adds a DEFAULT, not a capability: `.gitignore` and
+`extra_ignore_patterns` could already exclude these for anyone who knew to
+ask. Counted as `msbuild_output` in `discovery_skip_counts` and NOT a
+withheld reason (build output is derived data, so absence stays citable).
+Config key `skip_msbuild_output` / `JCODEMUNCH_SKIP_MSBUILD_OUTPUT`, default
+on; only an explicit `false` disables it, and `exclude_skip_directories`
+does not re-admit it because the rule is a predicate, not a listed name.
+
+### Added - a NuGet `packages/` restore tree is pruned, and the watcher applies both .NET rules
+
+Classic NuGet (v2 / `packages.config`) restores every package to
+`packages/<Id>.<Version>/`, and restored packages ship vendored source --
+jQuery and bootstrap arrive as real `.js` -- which competed with a project's
+own code in ranking and ate the `max_folder_files` cap. A `packages/`
+directory is now pruned when a child directory holds the artifact NuGet
+itself wrote under the same name (`packages/Newtonsoft.Json.6.0.3/
+Newtonsoft.Json.6.0.3.nupkg`). ⚠ The artifact marker is the design:
+`packages/` is hand-written source in Flutter, Dart and JS monorepos, so a
+name-only rule would delete real code, and "child looks like
+`<Id>.<SemVer>`" would key on a naming convention rather than on evidence the
+writer left. ⚠ Where a `.gitignore` already lists `packages` this changes
+WHICH rule excluded the files, not WHAT is indexed; it moves the corpus only
+where no such entry exists. Two known false
+negatives, both erring toward indexing and both test-pinned: a v2 tree whose
+`.nupkg` files were stripped, and the v3 global cache, which nests the
+artifact one level deeper. Config key `skip_nuget_packages` /
+`JCODEMUNCH_SKIP_NUGET_PACKAGES`, default on, counted as `nuget_packages`,
+NOT a withheld reason. Also closes a gap in `skip_msbuild_output` above: it
+never reached `_should_index_file`, so the watcher's fast path returned
+`(True, "")` for `obj/Release/Package/PackageTmp/Program.cs` and re-admitted
+publish output by the back door. Both rules now run on the full walk, the
+watcher fast path and `refresh`; `resolve_explicit_paths` still bypasses them
+on purpose. ⚠ Routes that do NOT apply them: `index_file` (a gap that
+predates this change and covers every skip rule; the next full walk removes
+what it added), and `index_repo`, which gets `.vs/` through the shared skip
+list but neither marker rule.
+
+## [1.108.337] - 2026-10-09 - a shutdown checkpoints a database without migrating it
+
+### Fixed
+
+- **Shutting the server down no longer migrates or re-schemas the databases it only meant to
+  checkpoint (LEDGER L-143).** At shutdown the server compacts the WAL of every `*.db` in the
+  storage directory. It opened each one through the indexer's own connection, which on a first
+  visit creates the index schema or runs the version migrations. Two things followed, both
+  reproduced in `tests/test_store_close_only_checkpoints.py` (`evidence/red.txt`): a database
+  another thread or process was still creating raised `no such table` out of the shutdown path,
+  because its `meta` table existed and its version row did not, so every migration ran against
+  it; and any other SQLite file in the directory had the index tables created inside it
+  (`telemetry.db` lives there when `JCODEMUNCH_PERF_TELEMETRY` is on). A file that is not a
+  database raised too, and stopped the loop before the databases after it were compacted.
+  The first was seen once on CI, on Windows, in the `--watcher` shutdown: the cancelled initial
+  index was still running in its thread when the store was closed. With that interleaving
+  pinned, `main` raises `no such table: files` from the shutdown's last line and this change
+  does not (`evidence/l143_race.txt`).
+  The checkpoint now opens a plain connection, compacts, and logs what it could not do at
+  debug level. It never raises: it runs from `finally` blocks, where an exception replaces the
+  one being handled. An index's WAL is compacted as before.
+  Not changed: index tables an earlier shutdown created inside another database stay there.
+  On the one store read for this change they hold no rows, except `meta`, which holds the two
+  rows the migration path wrote (`index_version`, `call_refs_missing`); nothing reads them.
+  Listing the indexed repos still opens every database in the directory through the indexer's
+  connection (LEDGER L-144).
+
+## [1.108.336] - 2026-10-08 - a fusion search scores no query against another model's vectors
+
+### Fixed
+
+- **A fusion search no longer scores a query against another model's vectors (LEDGER
+  L-135).** `search_symbols` with `fusion=true` embeds the query with the active model and
+  scores it against the stored vectors as its similarity channel. The semantic exit has asked
+  what built those vectors since 1.108.334; this exit asked nothing. Measured at the tool with
+  a mocked provider (`evidence/l135_before_after.txt`), over a store built by another model:
+  the provider was called for the query and the verdict read `channels.semantic: "ok"` in
+  every case, at another width (where the channel scored nothing) and at the same width
+  (where it ranked by vectors of two models).
+  The exit now asks `stale_reason`, the rule `embed_repo` and the semantic exit share, before
+  it calls the provider. On a changed model, a changed task type, or vectors with no metadata
+  it calls the provider for nothing, fuses the other channels, and returns
+  `semantic_store_mismatch` in the body with `channels.semantic: "unavailable"`, the field and
+  the wording the semantic exit returns. Where the stored model is unknown and the width
+  differs, the provider is called once and the reason is `embedding_dimension_mismatch`. That
+  answer is not cached, so a search after `embed_repo` sees the rebuilt store. The exit still
+  writes nothing, and an unknown stored model at the same width is still scored.
+  One store changes behaviour on upgrade, the same one as in 1.108.334: vectors with no
+  metadata, which a full re-index left before 1.108.331 (#522). A fusion search scored those;
+  it now answers `embedding_metadata_missing` and fuses without the similarity channel until
+  `embed_repo` runs.
+  Not changed: under task-aware Gemini this exit embeds the query without the query task type
+  the semantic exit passes (LEDGER L-139).
+
+## [1.108.335] - 2026-10-08 - a read-only open reads the file the path names
+
+### Fixed
+
+- **A storage path holding `#` or `%` no longer hides what is stored (LEDGER L-137).** Every
+  read-only reader opens its database through one function, which built the SQLite URI as
+  `file:{path}?mode=ro` from the raw path. SQLite reads that string as a URI: `#` starts a
+  fragment, `?` starts the query, and `%HH` is an escape. So where the storage directory's
+  name held one of them the open named another file. Measured at the tools on a store holding
+  three vectors (`evidence/l137_before_after.txt`): under a directory named `c#proj` the
+  "read-only" connection opened an empty file `c` beside it, WRITABLE, and
+  `EmbeddingStore.has_any()` answered False; under `a%20b` and `pct%41` the open raised and
+  `has_any()` answered None. In all three `iter_raw` returned no row and the store listed no
+  source root. A lexical `search_symbols` and `get_symbol_source` still answered, through the
+  full load.
+  The path is now escaped where the URI is built, `%`, `#` and `?` only, so a path that opened
+  before opens as it did; on the branch all four directories in that file read 3 vectors, list
+  their source root and refuse a write. The new tests build real databases under nine
+  directory names (eleven off Windows, where `?` is allowed in a name), with and without WAL
+  sidecars, and assert that nothing is created beside them; on Windows the `?` case is the
+  extended-length prefix, under which the open used to fail
+  (`tests/test_readonly_uri_quotes_the_path.py`). The existing contract test could not see
+  this: its databases sit in a temp directory whose name holds none of those characters.
+  A UNC path opens as it did before (the review's probe, not an evidence file).
+
+## [1.108.334] - 2026-10-08 - a semantic search writes no vector of a second model
+
+### Fixed
+
+- **A semantic search no longer writes a second model's vectors into the store (LEDGER
+  L-121).** `search_symbols` with `semantic=true` embeds every symbol that has no vector and
+  writes it. `embed_repo` has compared the stored model with the active one since #500; the
+  search, the other of the two vector writers, compared nothing. So after a change of embedding
+  model, one semantic search on a repo with a new symbol wrote that symbol at the new width
+  beside the old vectors (`evidence/l121_before_after.txt`, a mocked provider: five vectors at
+  width 8, then `{4: 1, 8: 5}`). The matrix keeps the first width and drops the rest, so the
+  new symbol read as missing on every later search and each one called the provider for it
+  again (two calls per search in that file, the query and the symbol).
+  The rule now has one home, `stale_reason` in `storage/embedding_store.py`, and both writers
+  ask it. It covers a changed model, a changed task type, and vectors with no metadata; an
+  unknown stored model is still not a change, and there the width decides. On a reason the
+  search does not rebuild: a search is a read, and two clients on one store with different
+  providers would re-embed the whole repo on every search from the other. It writes nothing,
+  calls the provider for nothing, ranks without the semantic channel, and says so in the
+  response body as `semantic_store_mismatch` (`reason`, `stored_model`, `active_model`,
+  `remedy`), with `channels.semantic: "unavailable"` in the verdict. `semantic_only` returns
+  no row there. Where the stored model is unknown and only the width differs, the reason is
+  `embedding_dimension_mismatch` with `stored_dimension` and `active_dimension`; the provider
+  is called once there, for the query, and its width is compared with the width of the stored
+  vectors themselves. `embed_repo` rebuilds, as before, and the next search scores again.
+  One store changes behaviour on upgrade: vectors with no metadata, which every full re-index
+  left before 1.108.331 (#522). A semantic search scored and topped those up; it now answers
+  `embedding_metadata_missing` and ranks without the semantic channel until `embed_repo` runs,
+  which re-embeds the repo.
+  The rule reads what is recorded about the vectors, so the record no longer outlives them:
+  `EmbeddingStore.clear()` removes the dimension, model and task type with the vectors, and a
+  writer that finds a record beside no vectors removes it with a statement that cannot delete
+  a vector. Before, a rebuild whose every batch failed left an empty store named for the old
+  model, and the retry wrote the new model's vectors under that name and reported
+  `embedding_dimension` from the old one.
+  Each writer decides its write from a reading taken over the connection it writes with.
+  `embed_repo` reads once, and that reading decides both the rebuild and what it reports. The
+  search reads again at its write, after its provider calls, so a store another client rebuilt
+  in between is left alone. The read-only reading the search starts from sees nothing under a
+  storage path that holds `#` (LEDGER L-137); there the search learns of a changed model only
+  at the write, after it has called the provider, and still writes nothing.
+  A test scans `src/` and fails on a function that calls `set_many` without asking
+  (`tests/test_semantic_topup_checks_the_stored_model.py`).
+  Not changed: the fusion exit (`fusion=true`) still scores a query from the active model
+  against a stored model's vectors (LEDGER L-135), and `embed_repo` without `force` on a store
+  whose model is unknown still writes a new width beside the old one (LEDGER L-136).
+
 ## [1.108.333] - 2026-10-07 - the parse budget stops a slow parse again on a fresh install
 
 ### Fixed
