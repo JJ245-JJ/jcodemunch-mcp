@@ -78,6 +78,9 @@ def _javac_runs(tmp_path) -> None:
     index stale, and the preflight then refuses for that reason instead."""
     if not shutil.which("javac") or not shutil.which("java"):
         return  # the JLS rule stands without it; the compile is the proof when present
+    # macOS ships /usr/bin/javac as a stub that fails without a JDK installed.
+    if subprocess.run(["javac", "-version"], capture_output=True).returncode != 0:
+        return
     build = tmp_path.parent / (tmp_path.name + "-javac")
     build.mkdir()
     subprocess.run(
