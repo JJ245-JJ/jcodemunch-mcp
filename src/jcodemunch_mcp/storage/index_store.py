@@ -592,7 +592,23 @@ INDEX_VERSION = 17
 #   `{{ ... }}` or `{% ... %}` opens no comment; and a whitespace-control
 #   mark is dropped only for its own dialect (`+` Jinja and dbt, `~` Twig).
 #   ⚠⚠ No symbol id moves; only `docstring` changes, on UNCHANGED content.
-PARSER_GENERATION = 11
+#
+# 12 (L-159): a call through a receiver records the METHOD. In Go, Java, Rust,
+#   Ruby and C# `t.Recv()` recorded `t`, so a method read as never called and
+#   a function named like a receiver read as called. ⚠⚠ No symbol id moves;
+#   only `call_references` changes, on UNCHANGED content, and the dead-code
+#   and call-hierarchy tools read nothing else for these languages.
+#
+# 13 (L-164): a call written inside a Rust macro invocation is recorded. The
+#   grammar leaves a macro's arguments as tokens, so `assert_eq!(f(x), y)`
+#   recorded no call of `f`. ⚠⚠ No symbol id moves; only `call_references`
+#   changes, on UNCHANGED content.
+#
+# 14 (L-166): a Java constructor's `super(...)` records the superclass's
+#   constructor, by the name the class extends. It recorded nothing, so the
+#   constructor of a class that is only subclassed read as never called.
+#   No symbol id moves; only `call_references` changes, on UNCHANGED content.
+PARSER_GENERATION = 14
 
 
 @dataclass(frozen=True)

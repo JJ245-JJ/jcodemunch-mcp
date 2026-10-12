@@ -2,6 +2,604 @@
 
 ## [Unreleased]
 
+## [1.108.350] - 2026-10-12 - a watched repo no longer stays stale after a commit, switch or pull
+
+### Fixed - a watched repo stayed `stale` after a commit, switch or pull that changed no file (#1040)
+
+Reported by @randyhbh, with the mechanism. A repo is `fresh` when the index's stored `git_head`
+equals the live `HEAD`. The stored value was refreshed only inside `index_folder`, and the
+watcher ran `index_folder` only on a file event. A commit writes under `.git/` only, which the
+watcher does not watch, so after `git commit` the repo read `stale` in `get_watch_status` and
+`list-repos`, and `search_text` refused to certify absence, over an index whose every file was
+current. It stayed that way until some unrelated file changed. A pre-commit hook that touches
+the tree made it certain: the reindex it provoked ran during the commit and stored the parent's
+SHA, and the ref was written seconds later. #330 had fixed the no-change run to refresh the
+SHA; the watched case never started one.
+
+The watcher already woke every second and threw the empty wake-up away. It now uses it: it
+reads where HEAD points (`HEAD` and the ref it names, at most 256 bytes of each; no process is
+started), and once a move has held still for one more wake-up it asks git for the commit and
+compares it with the stored one. When they differ it runs the ordinary incremental index, whose
+no-change path refreshes the SHA. So a commit is followed on the second idle wake-up after it
+(wake-ups are a second apart), and `git switch -c` by nothing, since the commit did not move.
+HEAD moves that follow each other inside one wake-up, as a fast rebase's do, get one
+reconciliation after the last; moves further apart get one each. A reconciliation that fails
+is tried again after a minute.
+
+The report suggested rewriting the stored SHA directly. That would mark the index current at
+the new HEAD without reading a file, and a checkout whose file events were lost would then
+carry old symbols under a `fresh` verdict. The incremental index reads the tree, so a HEAD move
+now also repairs such a miss.
+
+Measured on this box (`evidence/signature_cost.txt`): one read of where HEAD points takes 230.5
+microseconds for this repository, once a second per watched repo.
+
+What this does not do:
+
+- **A repo nobody is watching still reads `stale` after a commit** until something indexes it.
+  That verdict is correct: nothing has checked the tree.
+- **A HEAD move costs one incremental index of the repo**, which walks the tree. On a very large
+  repository that is the same cost as the `post-commit` hook workaround in the report.
+- **A reftable repository is read but not tested here**; the signature stats its table list.
+  LEDGER L-168.
+
+Forty reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+## [1.108.349] - 2026-10-12 - a Java constructor reached only by super(...) is no longer reported as having no caller
+
+### Fixed - a Java constructor reached only by `super(...)` was reported as having no caller (LEDGER L-166)
+
+A Java constructor is named for its class, and `new Base()` records a call of `Base`. A
+subclass constructor reaches the same constructor with `super(...)`, which the grammar gives a
+node of its own, and the parser recorded nothing for it. The node names nothing either: the
+name is on the class, in `extends Base`. So the constructor of a class that is only ever
+subclassed, which is every abstract class, had no caller on record, and `get_dead_code_v2`
+reported it with `no_callers`. Found fixing L-159.
+
+A constructor's `super(...)` now records the name its class extends, whether that is written
+`Base`, `Base<T>`, `pkg.Base` or `@Ann Base`, and whether the call is `super(x)` or
+`outer.super(x)`. The class is read downward: its constructors, and the first statement of each.
+
+Measured through `get_dead_code_v2` on gson, a shallow clone read and parsed only
+(`evidence/measure_dead_l166.txt`, with its commit): 1708 functions carried `no_callers` before
+and 1704 after. Four constructors in three test classes are no longer reported and none is
+newly reported; `tests/fixtures` did not move. The fix is small. The ledger row asked whether
+`super(...)` reaches any of the twenty-four gson functions 1.108.346 newly reported: it reaches
+none of them, and all twenty-four are still reported.
+
+What this does not do:
+
+- **`this(...)` is not recorded.** It calls a constructor of the enclosing one's own name, and a
+  call of the enclosing function's name is dropped as recursion. Where the class is created
+  with `new` anywhere, every overload is cleared by name already.
+- **A superclass constructor called implicitly is not recorded.** A constructor with no
+  explicit call runs the superclass's no-argument one; nothing is written, so nothing is read.
+- **A `super(...)` that follows other statements is not recorded.** JDK 25 allows
+  `Kid(int x) { check(x); super(x); }`; the grammar this release ships parses that `super` as an
+  error. L-167.
+- **Other languages' constructors are a larger gap and are not touched.** A Python `__init__`,
+  a JavaScript or TypeScript `constructor` and a Ruby `initialize` are never called by their
+  own name, and each reads `no_callers`: 40 of the 451 reported functions on this repository's
+  `src/`, 13 of 853 on zod and 27 of 327 on sinatra. C# `: base(...)` and `: this(...)` record
+  nothing. L-167.
+- **An existing index is re-parsed once**: `PARSER_GENERATION` moves to 14.
+
+Ten reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+## [1.108.348] - 2026-10-12 - a Go, Java, C#, Rust or Ruby function called only from another file is no longer reported as having no caller
+
+### Fixed - a Go, Java, C#, Rust or Ruby function called only from another file was reported as having no caller (LEDGER L-165)
+
+`get_dead_code_v2` looked for a caller of a function in two places: the function's own file,
+and each file the import graph says imports that file. That is the right rule for Python and
+JavaScript, where a file must import a name to call it. It is the wrong rule where a file calls
+another with no import between them: two files of one Go package, two classes of one Java
+package, two C# files of one namespace, a Rust path call (`crate::flags::config::args()` needs
+no `use`), any two Ruby files (a `require` is global to the process). There the call was on
+record and was never asked about, and the function carried `no_callers`. L-157 fixed the same
+blindness for files read as text; the call-reference path kept it. Found fixing L-159.
+
+A function of such a language that is still without a caller now has one when any symbol of the
+SAME language records a call of its name. The languages are one named set,
+`LANGUAGES_CALLED_ACROSS_FILES_WITHOUT_AN_IMPORT` (`tools/_call_graph.py`): Go, Java, C#, Rust
+and Ruby, plus Kotlin, Swift and PHP, which need no import either and record no call today
+(L-158). Python, JavaScript and TypeScript are not in it and behave as before: a same-named
+call in a file that does not import the function counts for nothing.
+
+Measured through `get_dead_code_v2` on shallow clones read and parsed only
+(`evidence/measure_dead_l165.txt`, with each commit), distinct functions carrying `no_callers`
+before and after: gin 750 and 647, ripgrep 810 and 521, RestSharp 828 and 625, sinatra 455 and
+305. None is newly reported in any of them. express, zod, this repository's `src/` and
+`tests/fixtures` did not move.
+
+What this does not do:
+
+- **The match is by name, so an uncalled function can hide behind any call of its name.** A
+  function nothing calls is not reported when a same-named one of its language is called, and
+  a call of a LIBRARY method counts the same way: a project `fn len()` nothing calls is cleared
+  by `v.len()` on a `Vec` in another file, a Go `Println` by `fmt.Println`, a C# `Dispose` by
+  `s.Dispose()` on a `Stream` (the reviewer's fixtures, `no_callers` on `origin/main` and gone here). Of
+  the 289 ripgrep functions no longer reported, 179 share their name with another Rust function
+  (`write`, `finish`, `empty`); the other 110 have a name of their own, and that does not make
+  them safe, since `clone`, `as_str` and `init` are among them. In RestSharp 35 of the 203 are
+  `Dispose`. Which of the cleared functions are dead was not looked into. This errs toward not
+  reporting, and it is how the call-graph-only mode has always matched.
+- **A call written outside any function, in another file, is still not counted.** The pass
+  that reads module-level calls keeps the import-edge rule. A Ruby method called only at the
+  top level of another file is still reported; the same call at the top level of its own file
+  is counted. A call in a Ruby class body is counted in neither. L-166.
+- **gson did not move** (1701 before and after). An index with no import edge takes the
+  call-graph-only path, which already asked every file.
+- **`cmd` in ripgrep's `tests/util.rs` is still reported.** The ledger row called it the same
+  shape. It is not: every call of it is inside a module-level `rgtest!`, and a macro with no
+  enclosing function records nothing. L-166.
+- **`get_call_hierarchy` and `get_impact_preview` are unchanged.** They list callers through the
+  same import-edge rule, and a by-name match there would list a caller of another function of
+  that name. L-166.
+
+Nine reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+## [1.108.347] - 2026-10-12 - a Rust function called only inside a macro is no longer reported as having no caller
+
+### Fixed - a Rust function called only inside a macro invocation was reported as having no caller (LEDGER L-164)
+
+The Rust grammar does not parse a macro's arguments. `assert_eq!(e(x), seq([y]))` reaches the
+parser as a macro name and a tree of tokens, and the parser recorded a call only for a parsed
+call expression. So a function called only inside `assert_eq!`, `assert!`, `vec!`, `println!`
+or a test macro had no caller on record, and `get_dead_code_v2` reported it with `no_callers`.
+Rust tests are written almost entirely inside such macros, so a test helper was the usual
+victim. Until 1.108.346 a local variable that happened to share the function's name had been
+recorded as a call and stood in for some of them; that release stopped recording receivers and
+reported them. Found fixing L-159.
+
+The parser now reads the tokens of a macro invocation: a name directly followed by a
+parenthesised group is a call of that name. That one shape is how `f(x)`, `t.m(x)` and
+`a::b::f(x)` all end, in `(...)`, `[...]` and `{...}` macros alike, nested or not; a turbofish
+(`f::<T>(x)`) is stepped over. A contextual keyword counts as a name, since a function may
+carry it (`Foo::default()`, `a.union(&b)`, `gen(3)`). Not read as calls: a reserved word before
+a group (`in (0..n)`), a name being declared (`fn name(x)`, `struct Pair(u8, u8)`), a lifetime
+or a label, the closure traits (`Fn(u8) -> u8`), the next macro's own name, and an attribute
+written in the macro's body (`#[cfg(not(test))]`). An attribute outside a macro is not a macro
+invocation and is never read. The body of each `macro_rules!` arm is read the same way, since a
+test that defines a local macro calls its helper only there; the arm's pattern is not.
+
+Measured on ripgrep, a shallow clone read and parsed only (`evidence/measure_dead_l164.txt`,
+with its commit). Through `get_dead_code_v2`, 849 distinct functions carried `no_callers`
+before and 810 after: thirty-nine are no longer reported and none is newly reported.
+`tests/fixtures` did not move. Of ripgrep's 2991 Rust functions, 445 gained a recorded call
+and none lost one; parsing its 110 Rust files records 9487 call references where it recorded
+8469, in 1.183 s against 1.119 s, best of three.
+
+Each token is read once, starting from the invocation. Two earlier versions of this fix did
+not, and the review measured both. The first walked back from each group to look for a
+turbofish, which cost N times N on a macro of N comparisons. The second made every nested
+group its own call node and asked each for its ancestors, which cost depth times groups. Each
+ran a file past the parse budget that `main` parses without trouble, and a file past the
+budget is skipped whole. On those two shapes now: 16000 comparisons parse in 0.321 s against
+0.250 s on `main`, and 64000 nested groups take 0.71 s to 0.78 s at depths from 10 to 640
+against 0.50 s to 0.54 s. A test doubles each shape and counts the loop's steps. The first
+version also took a name only from an `identifier` token, so `default`, `union` and `gen` were
+never recorded, and it read attribute arguments as calls. The third did not read a
+`macro_rules!` body, which left ripgrep's live `sgramq` reported. All were the reviewer's
+measurements.
+
+What this does not do:
+
+- **Tokens cannot tell a call from a pattern.** `matches!(x, Wrapped(y))` records `Wrapped`,
+  `Some(y)` records `Some`, and an enum variant with a field declared inside a macro records
+  its name. `cfg!(any(unix))` records `any`. Toward not reporting.
+- **What a macro expands to is not read**, only what is written in an invocation or in a
+  `macro_rules!` body. `$name($arg)` in such a body records nothing.
+- **`cmd` in ripgrep's `tests/util.rs` is still reported.** The ledger row named it with two
+  others. Its calls are recorded now, but they are in another file, and the tool does not
+  count that call; that is L-165.
+- **The order of a function's recorded calls can change**, where a name is now first seen
+  inside a macro: 19 of ripgrep's functions.
+- **An existing index is re-parsed once**: `PARSER_GENERATION` moves to 13.
+
+Twenty-six reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+## [1.108.346] - 2026-10-12 - a call through a receiver records the method, never the receiver
+
+### Fixed - a call through a receiver recorded the receiver's name, so the method read as never called (LEDGER L-159)
+
+For every call the parser records one name, and the tools that ask "who calls this" read those
+names: `get_dead_code_v2`, `get_call_hierarchy`, `get_impact_preview`, `get_untested_symbols`,
+`find_similar_symbols`, `winnow_symbols`, `find_implementations` and the LSP bridge. The rule that picks the name knew two ways a
+grammar writes a member call, JavaScript's and Python's. For any other callee it took the first
+identifier inside it. In Go, Java, Rust, Ruby and C#, the first identifier inside `t.Recv()` is
+`t`.
+
+So the recorded name was the receiver's, and that is two errors. The method was never named:
+`get_dead_code_v2` reported a Go, Java, Rust or C# method called only as `t.UsedMethod()` or
+`this.usedMethod()` with `no_callers`, live code as dead, in a tool whose rows feed delete
+decisions. And a function that shared a name with a receiver (`t`, `args`, a class called
+statically) read as called. Found by the reviewer of L-155, who measured the Go and Java cases.
+
+Measured on every call node of nine trees, 130845 of them, this repository's `src/` and
+`tests/fixtures` and seven shallow clones read and parsed only (`evidence/measure_l159.txt`,
+with their commits):
+
+| language | call nodes | recorded another name before | recorded none before |
+|---|---|---|---|
+| Go | 9145 | 6165 | 595 |
+| Java | 18098 | 8882 | 849 |
+| Rust | 10043 | 5285 | 1768 |
+| Ruby | 12991 | 1877 | 1327 |
+| C# | 4768 | 3171 | 27 |
+| TypeScript | 41100 | 0 | 4 |
+
+JavaScript, Python and TSX did not move, and no call in any language lost its name.
+
+The rule reads the grammar's own fields now: where each call node keeps its callee, and for
+each member shape which side is the member (`extractor.py` has the tables). It covers what the
+old fallback got wrong beyond the reported call: a path (`Type::assoc()` recorded `Type`), a
+static call, C#'s `a?.M()`, a generic method or constructor, `new pkg.Type()`, a parenthesised
+callee, a JavaScript private method. The fallback is gone. A callee of a type the tables do not
+name records nothing, where it used to record whatever identifier came first.
+
+Through `get_dead_code_v2` on the same trees, distinct functions carrying `no_callers` before
+and after (`evidence/measure_dead_l159.txt`): gin 781 and 750, ripgrep 1296 and 849, gson 2056
+and 1701, RestSharp 840 and 828, sinatra 521 and 455. express, zod, this repository's `src/`
+and `tests/fixtures` did not move.
+
+What changes that is not a pure gain:
+
+- **Functions that were found only by a shared name are reported now**: 8 in ripgrep and 24 in
+  gson, none in the other seven trees. Of the ripgrep eight, five were read. `defaults` has no
+  call anywhere. `seq`, `m` and `cmd` are live: they are called only inside macro invocations
+  (`assert_eq!`, `eqnice!`), whose arguments the Rust grammar leaves as tokens, so no call was
+  ever recorded for them and a local variable of the same name had been standing in. `args` is
+  live, called from another file as `crate::flags::config::args()`; why that call is not
+  counted was not looked into. Of the gson twenty-four, four were read: three are constructors
+  nothing calls with `new` (two of them private), found before through static calls on the
+  class, and `excluder` has no call. The rest are L-164.
+- **Ruby still records a bare receiver, beside the method.** Ruby writes a method called with
+  no receiver and no arguments exactly like a local variable, so in `settings.environment` the
+  receiver may be a call. Without this, 27 of sinatra's methods that the old rule had found
+  were reported (the last lines of `evidence/measure_dead_l159.txt`).
+- **A call of a container's element records the container** (`fs[0]()` records `fs`,
+  `t.handlers[k]()` records `handlers`), as before for the first and newly for the second, in
+  Go, Python, JavaScript and C#. The first version of this fix recorded nothing for the C#
+  forms (`fs[0]()`, `a?[0]()`, and a null-forgiving `f!()`); its reviewer measured that.
+- **A method that delegates to a method of the same name records no call for it.** A call to
+  the enclosing function's own name is dropped as recursion, so `write` calling `w.write()`
+  records nothing now, where it recorded `w`. The reviewer's measurement; L-164.
+- **An existing index is re-parsed once.** The names change on unchanged files, so
+  `PARSER_GENERATION` moves to 12 and the next index of a repository is a full one.
+
+PHP, Kotlin, Swift and Dart record no call at all (L-158), and `get_dead_code_v2` reads their
+files as text for that reason. They still record none, and the test pins it: a parser that
+recorded some of their call shapes would take the text evidence away for the rest.
+
+Twenty-seven reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+## [1.108.345] - 2026-10-11 - a name that starts or ends in a punctuation mark is matched where it is used
+
+### Fixed - a name that starts or ends in a punctuation mark was never matched where it is used (LEDGER L-154)
+
+Every tool that asks "does this text name this symbol" used one rule: a word boundary, the
+name, a word boundary. A word boundary beside a punctuation mark exists only when a WORD
+character is on its other side. So a name that ends in a mark (Ruby and Elixir `valid?` and
+`save!`, Clojure `empty?`) matched in `valid?x` and never in `valid?`, `valid?(x)` or
+`valid? x`. A name that starts with one (Clojure `-main`) matched in `run-main` and never in
+`(-main)`. `get_dead_code_v2` reported such a function with `no_callers` wherever its evidence
+was text, `get_blast_radius` did not find its uses, and the rename plan in `plan_refactoring`
+skipped them and classified the line that defines one as a use. Found while fixing L-152.
+
+Measured through `get_dead_code_v2` on three repositories, shallow clones read and parsed only
+(`evidence/measure_l154.txt`, with their commits). In ring (Clojure), 30 functions have a name
+with a mark at an end: all 30 carried `no_callers` before and 6 do now. In plug (Elixir), 85
+such functions: all 85 before, 1 now. In sinatra (Ruby), 154 such functions: 98 before and 96
+now. Ruby moved little because its evidence is mostly call references, which never went
+through this rule; what is left there is L-159. No function is newly reported on any of the
+three, on this repository's `src/` (no such name, the same 451 rows) or on `tests/fixtures`.
+
+The rule is one module now, `jcodemunch_mcp/word_rule.py`, and each side of a name is decided
+by the name's own first or last character:
+
+- a word character: the boundary is unchanged, so a name with a word character at both ends
+  gets the pattern it always had, byte for byte;
+- `?`, `!`, `-`, `$`, `@`, `*` and any other mark not named below: the name must not be glued
+  to a word character on that side;
+- a trailing `=` (a Ruby setter): a word may touch it, since `u.name=value` is the ordinary
+  call, but it must not be the start of `==`, `=~` or `=>`;
+- a leading `.` or `#` (a CSS selector): a word may touch it, since `a.btn` and `div#main` name
+  `.btn` and `#main`;
+- whitespace, and a name with no word character at all (an operator): no condition.
+
+The setter and selector lines came out of the review. The first version treated every mark
+alike, which reported a called Ruby setter as having no caller and made a rename of `name=`
+rewrite the comparison `name=="x"`.
+
+The rule was written by hand on 84 lines of six modules (`evidence/sites.txt`, counted by the
+test's own scan; the ledger row had counted 19). Fifty-nine of them were the per-language
+definition templates in `plan_refactoring.py`, which ended the name with a boundary. All 84
+read the module now, and the scan fails on a new one in any of the shapes they took:
+concatenated to an escape, to a variable holding one, to a joined alternation, written into an
+f-string, or left in a `{name}` template. The templates are also filled by replacement now;
+`str.format` read the literal brace in the CSS ones as a field. Twenty reintroduced defects
+each fail the tests (`evidence/mutants.txt`).
+
+What changes that is not a pure gain, each pinned in the tests:
+
+- `valid?x` no longer names `valid?`, and `run-main` no longer names `-main`. Those were the
+  only places the old rule matched such names.
+- `"a$x"` and `"item_$total"` do not name `$x` and `$total`: a `$` glued to a word character is
+  not read as a sigil. A PHP string that interpolates a variable directly after a letter, a
+  digit or an underscore is missed.
+- An operator name is matched anywhere it appears, so `==` is named in `a===b`, and a rename of
+  an operator rewrites every occurrence.
+- A glued local assignment `name=1` is indistinguishable from a call of the setter `name=`.
+- `-` still ends a token, as before: `main` is named in `run-main`, `empty?` in `not-empty?`,
+  and `valid` in `valid?`.
+- A CSS name that starts with `:` or `%` (`:root`, `%btn`) is no longer named when glued to a
+  word, as in `html:root`; only `.` and `#` have the selector rule. The reviewer measured it;
+  it reaches `get_blast_radius` and the rename, not the dead-code rows.
+
+Three test files stated the old behaviour. Two pinned it as cases ("a bang needs a word after
+it", "a sigil needs a word before it", "a predicate needs a word after the mark"): those three
+are inverted and renamed, the operator case expects both spellings, and the files' reference
+loops read the rule from the module. The third filled the definition templates itself and now
+fills them the way the tool does. No assertion was removed.
+
+## [1.108.344] - 2026-10-11 - dead code: a caller in another file is found without an import edge
+
+### Fixed - `get_dead_code_v2` reported a function as having no caller when its only caller was in another file the import graph did not join to it (LEDGER L-157)
+
+For a function of a language that records no call reference, `get_dead_code_v2` read text in
+two places: the function's own file, and each file the import graph says imports that file. For
+several of those languages the graph has no edge where it matters. A Clojure `:require`, an
+Elixir `alias`, an Erlang remote call and a Bash `source` produced none when measured. Two C
+files that include one header are each joined to the header and never to each other, which is
+the ordinary C layout. And the call-graph-only mode has no import graph at all. In each case a
+function called only from another file was reported with `no_callers`. Found while fixing
+L-155; the C and Elixir shapes were its reviewer's.
+
+A function in a text-read file that is still without a caller is now asked of every other
+text-read file of a language that holds functions, import edge or not, on all three paths. Data
+files are not asked: a JSON file records no call and holds symbols, and a function named in one
+is not called there. `callers_read_as_text.files` counts the code files read this way too, so
+it rises where such files exist (17 to 20 on `tests/fixtures`); the key does not say which rows
+rest on this weaker evidence.
+
+One line in such a file is not a call: inside an indexed symbol of the same name, the first
+line that names it is that symbol's own declaration. So a C prototype that is indexed, and a
+second definition of `init` in another file, are not callers. The rule covers the indexed
+symbol's own span and nothing around it; the list below says where that falls short.
+
+This is the weakest evidence the tool uses, and it errs toward not reporting. Any other code
+file that names the word counts. Measured, each a function nothing calls that is no longer
+reported (`evidence/limits_l157.txt`):
+
+- a comment in another code file holds its name;
+- a function of the same name elsewhere recurses, or is an Erlang function with a second clause;
+- another Elixir module has an `@spec` for the same name, or another Erlang module lists it in
+  `-export`. Nearly every Erlang module has an export list, so an unexported Erlang function
+  that shares a name with an exported one elsewhere is not reported;
+- another C file forward-declares and defines the same name, or a header declares it twice (one
+  symbol is indexed, so the other line counts);
+- a doc comment above its prototype names it. In a header documented that way every declared
+  function reads as called.
+
+The last three bullets were the reviewer's shapes, and it measured an Erlang `-spec` for the
+same name in another module the same way. On `tests/fixtures`, 140 functions carried
+`no_callers` before and 137 after (`evidence/measure_l157.txt`, at `min_confidence` 0); the
+three that left are `content`, `get` and `bootstrap.bundle.min.js`, each named by an unrelated
+fixture and none of them called. On this repository's `src/` (451) and `benchmarks/` (138)
+nothing moved, and no function is newly reported on any of the three. Fewer `no_callers` rows
+also change how often that signal fires, and the tool gives a signal a vote only inside a band
+of fire rates: the reviewer built a repository where the fix moved the rate into the band and
+three rows appeared at the default `min_confidence` that `main` did not return, two of them
+dead and one live under L-154.
+
+The cost. The answer for a name is worked out once and kept: which files name it beyond their
+own declarations. A name made of word characters starts from one dictionary read; a name of
+several words (`do-thing`) is asked only of the files that hold its rarest adjacent pair of
+words with the same separator. Two earlier versions grew with files times functions: narrowing
+by the rarest single word, when every word was common, and asking per function, when every file
+defined the same callback names (the reviewer timed 1,998 PHP files at 7.3 s on `main` and
+25.8 s on that version). Through the tool on generated Clojure repositories, before and now
+(`evidence/measure_l157.txt`): 2,000, 4,000 and 8,000 functions whose every word is common,
+0.265 s, 0.553 s and 1.178 s against 0.278 s, 0.605 s and 1.294 s; seven shared uncalled names
+in each of 250, 500 and 1,000 files, 0.825 s, 2.029 s and 3.475 s against 0.863 s, 1.727 s and
+3.576 s. Thirteen reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+Still reported though live (`evidence/limits_l157.txt`):
+
+- A name that ends in `?` or `!` (L-154).
+- A facade of the same name that calls on its declaring line, `(defn start [x] (impl/start x))`
+  written on one line (L-161).
+- A function of a language that DOES record calls, called only from a text-read file: a Python
+  function named in a Clojure file (L-161).
+
+## [1.108.343] - 2026-10-11 - dead code: a file is read as text wherever its language records no call
+
+### Fixed - `get_dead_code_v2` reported a called function as having no caller when its language records no calls and another language in the repository does (LEDGER L-155)
+
+`get_dead_code_v2` has two sources of evidence that a function is called: the call references a
+parser records, and the file's text. It chose between them with one question asked of the whole
+repository: does the index hold any call reference? With none, it read files as text. With any,
+it read call references, plus the text at module level only.
+
+Most languages here record no call reference. The parser keeps a table of call nodes
+(`_CALL_NODE_TYPES`) for thirteen languages, and every other language records none by
+construction. Two of the thirteen, PHP and Dart, recorded none either on the shapes tried. So in
+a repository that also holds Python or Ruby, a function in any of those languages that is called
+only from inside another function had no evidence on either path and was reported with
+`no_callers`. Measured on Clojure, Elixir, Erlang, PHP, C, Bash and Dart (`evidence/red.txt`).
+This is #409's flip one level down: there one call reference anywhere moved a repository onto a
+path that could not see module-level calls. Found in the review of L-152.
+
+The choice is now made per file. A file is read as text when none of its symbols' languages has
+a call reference anywhere in the index. The index is asked, not the table, which names PHP and
+Dart. A file that holds symbols of two languages (a template with a script block) is read as
+text only when neither records a call.
+
+The call-graph-only mode (the one an index with no import edge takes) had the same defect in a
+second form: it knew no text at all, so a file of such a language had every function reported.
+It now reads a function's own file by the same per-file rule, whatever else the repository
+holds. A Clojure file indexed alone, beside Python that calls nothing and beside Python that
+calls give one answer there.
+
+When a file's text was read for a caller the response says so in a new key,
+`callers_read_as_text: {"files": n, "languages": [...]}`, on all three paths, the old text
+fallback included. Text is weaker evidence than a call reference: a mention in a comment counts
+as a caller. `files` counts the files whose text was read, not the files eligible: a
+`pyproject.toml` holds symbols and records no call, and nothing is asked of it. The key is
+absent when no file was read that way, and it carries a count and language names, never the
+file list. It does not cover the module-level sweep, which reads the text outside every symbol
+on any repository with call references and is not disclosed.
+
+Measured through the tool, 1.108.342's code plus L-152's fix against this
+(`evidence/measure_l155.txt`): on this repository's `src/` the same 451 functions carry
+`no_callers` before and after, and on `benchmarks/` the same 138; neither response carries the
+key. On `tests/fixtures`, 160 before and 140 after; 20 are no longer reported and none is newly
+reported, with 17 files read as text. Thirteen reintroduced defects each fail the tests
+(`evidence/mutants.txt`).
+
+What this does not fix (`evidence/limits_l155.txt`, each still reported after the fix):
+
+- A name that ends in `?` or `!` is still not found by the text rule (L-154; measured on
+  Elixir's `valid?`).
+- A function called only from ANOTHER file is found only where the import graph holds an edge
+  from the calling file to the function's file. PHP's `require` gives one. A Clojure `:require`,
+  an Elixir `alias`, and two C files that include one header do not (L-157).
+- In call-graph-only mode there is no import graph, so only a function's own file is read
+  (L-157).
+- The choice is per language. A language that records some calls gets no text reading for the
+  call shapes its parser misses: a Go method called through a receiver, `t.UsedMethod()`, is
+  reported, before and after (L-159).
+
+A language that can record calls is read as text too when the repository's files of it hold no
+call between functions. That only ever finds a caller a call reference would not; it never
+removes one.
+
+One consequence in call-graph-only mode, measured by the reviewer and recorded as L-160: a
+Python file holding `def a()` and a module-level `a()` no longer has `a` reported when indexed
+alone, and still has it reported beside another Python file that records a call. Before, it
+was reported both times. That mode has no module-level sweep, so the answer for a language
+that records calls now depends on whether any file of it does.
+
+### Fixed - `get_dead_code_v2`'s module-level sweep no longer searches a file's whole residue once per function (LEDGER L-152)
+
+On an index that holds call references, `get_dead_code_v2` sweeps what those references cannot
+see: code at module level. A function whose name is a plain identifier was looked up in a token
+set built once per file. Any other name (`do-thing`, `valid?`, `save!`) ran a word-boundary
+search over the file's whole module-level text, once per function and per file that could call
+it. The comment beside it called such names rare. In Clojure nearly every function name is one.
+Found while fixing L-150.
+
+On one Clojure file of two-line functions with as many module-level lines, the tool took 0.90 s
+at 2,000 functions, 3.73 s at 4,000 and 15.43 s at 8,000; a Ruby file of predicate methods took
+0.80 s, 2.83 s and 10.90 s (`evidence/measure_old.txt`). The same six now take 0.06 s, 0.10 s,
+0.18 s and 0.07 s, 0.09 s, 0.18 s (`evidence/measure_new.txt`).
+
+Such a name is now asked of the word index 1.108.342 added, built once per file's module-level
+text. The matching rule is unchanged, and so is the path plain identifiers take. The old sweep
+and the new one add the same callers on this repository's `src/` (163) and on `tests/fixtures`
+(65, where 55 function names are not plain identifiers), and agree on twenty-four hand-written
+cases and six hundred generated repositories. Twenty-eight reintroduced defects each fail the
+tests (`evidence/mutants.txt`).
+
+The index itself changed, which also moves 1.108.342's text fallback. It narrows a search to
+the lines that hold a name's rarest word, and now prices that: when asking those lines would
+cost more characters than the text holds, it searches the text once for that name. A question
+that only needs to know whether a caller exists stops at the first match. Timed on the shapes
+the review used, 1.108.342's code against this (`evidence/shapes_main.txt`,
+`evidence/shapes_head.txt`):
+
+| shape | 1.108.342 | now |
+|---|---|---|
+| sweep, 1,600 names each called on every residue line | 0.151 s | 0.188 s |
+| sweep, 1,600 names each called once, every word on 400 other lines | 0.150 s | 0.206 s |
+| sweep, 1,600 names never called, every word on every residue line | 5.856 s | 5.939 s |
+| sweep, 1,600 names never called, two shared words per residue line | 0.306 s | 0.019 s |
+| index, 1,500 names, 400 lines hold every word and 800 long lines do not | 2.138 s | 0.066 s |
+| index, 1,500 names, every line holds every word | 5.224 s | 3.428 s |
+
+What it does not fix: when every word of a name is on most lines and nothing calls it, each such
+name still costs one search of the text (the third row). In the first two rows the sweep is
+slower than before by the cost of building the index once. The sweep's peak memory on 2,000
+hyphenated functions rose from 475,568 bytes to 658,785 (`evidence/measure_more.txt`).
+
+Two more remainders, timed by the reviewer and not by this run, are ledger row L-156. The index
+is built per file, so a repository of many files that each hold one such function pays a build
+per file for one question (2,000 files with 200 module-level lines each: 0.475 s before, 2.339 s
+now). And where a few very long lines each begin with many such names, listing the lines costs
+a full search where the old code stopped early (five 100,000-character lines: 0.077 s, 2.513 s).
+
+Not changed, and wrong: the word-boundary rule cannot match a name that ends in a punctuation
+mark unless a word character follows it, so a Ruby method `check_0?` called on a line of its own
+at module level still reads `no_callers` (`evidence/measure_new.txt`). That is ledger row L-154.
+Clojure, Elixir, Erlang and PHP files record no call reference at all, so in a repository where
+another language does, a function of theirs that is called only from inside another function
+reads `no_callers` too (`evidence/measure_more.txt`). That is ledger row L-155.
+
+## [1.108.342] - 2026-10-11 - the dead-code text fallback reads a file once
+
+### Fixed - `get_dead_code_v2` on an index with no call references no longer costs time quadratic in one file's functions (LEDGER L-150)
+
+When an index holds no call reference, `get_dead_code_v2` decides whether a function has a
+caller from text. That loop ran once per function or method, and each pass split the symbol's
+whole file into lines, joined every line outside the symbol back into one string and ran a
+word-boundary search over the result. The file's text was cached; the split, the join and the
+search were not. Found in the fourth review of #1012.
+
+On one generated Python file of empty functions beside a one-line module, the tool took 3.38 s
+at 2,872 functions, 13.68 s at 5,655 and 53.42 s at 11,109 (`evidence/measure_old.txt`). The
+largest of those files is 266,624 bytes, under the default `max_file_size`. The same three now
+take 0.05 s, 0.12 s and 0.22 s (`evidence/measure_new.txt`).
+
+Each file is now read, split and tokenised once (`FileWords` in `tools/_call_graph.py`), and a
+symbol's question is a lookup: which lines name it, and is one of them outside its own span. A
+name that is not one word (`add/2`, `ns::f`, `$x`, `save!`) is searched only on the lines that
+hold its rarest word, and an operator name only on the lines that contain it. The answer is
+unchanged: the old loop and the new one mark the same 2,370 of 2,620 functions and methods as
+called on this repository's `src/` forced onto the fallback, and agree on twenty-four
+hand-written cases and six hundred generated files, negative spans included. A name that holds
+a line separator can match across two lines, which a per-line index cannot answer; no parser
+here is known to produce one, and one that arrives is searched the old way. The test counts
+splits, searched and tokenised characters and the bytecode instructions the two modules
+execute, and never times anything; twenty-three reintroduced defects each fail it
+(`evidence/mutants.txt`). It does not see work done inside a single C call other than those.
+
+The cost is memory. On that `src/` run the fallback's peak was 34.1 MB against 10.0 MB, because
+the word lists for every file it reads are kept until it returns. Only a repository whose index
+holds no call reference takes this path; one with any call reference is unaffected.
+
+## [1.108.341] - 2026-10-11 - the index CLI chooses the index identity, and an existing directory is a local target
+
+### Added - the `index` CLI can choose the index identity (#1017)
+
+`index_folder` has taken `identity_mode` (`config`, `local`, `git`) since
+v1.108.6, and the `index` subcommand never passed it. The CLI therefore always
+ran in `config` mode, and a script that needed a path keyed a particular way
+had to call the Python function instead of the command. `jcodemunch-mcp index
+<path> --identity-mode local|git` now passes the mode through. The default is
+`config` (an index that already covers the path keeps its identity, else the
+config decides). A value outside
+the three is refused by the parser before anything is indexed. An explicit
+mode with a GitHub target is refused with a structured error before any
+network call, because identity modes describe local folders only; the refusal
+names the target. Review found that refusal would have reached real folders:
+the CLI decided local-or-GitHub from the target's spelling alone, so an
+existing directory typed as `proj/`, `proj/sub`, `~/proj` or `work/../proj`
+was sent to the GitHub indexer, with or without the option. A directory that
+exists is now local however it is spelled (`_index_target_is_local`); a
+target that is no directory is routed as before. ⚠ That moves commands that
+carry no option: `index owner/repo` or `index github.com/owner/repo`, run
+where a directory of that relative name exists, now indexes the directory,
+where it fetched the GitHub repo before. A ghq or `GOPATH/src` root is the
+second case (`github.com/owner/repo` exists there), and its `github.com`
+folder is the first. It is how `git clone` reads an existing path. A target
+that starts with a URL scheme or `git@host:`
+(`https://github.com/owner/repo`, `git@github.com:owner/repo`) is never
+probed as a path, and is routed by its spelling as before. A mode that
+conflicts with an index already in the store is `index_folder`'s own refusal,
+naming the index to invalidate. No MCP tool changes. Requested by @sKlat-beep
+in #1016.
+
 ## [1.108.340] - 2026-10-10 - ASP.NET Web Forms is indexed, and a handler wired in markup is referenced
 
 ### Fixed - a Web Forms handler wired in markup is referenced, and markup reaches the file graph

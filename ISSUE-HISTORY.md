@@ -2351,3 +2351,103 @@ The 1.108.339 entry, verbatim, dropped when it was compressed to a `Prior` line:
 The `Tests:` line's 1.108.337 count, verbatim:
 
 - ⚠ Prior (1.108.337): 15063 passed, 25 skipped, **0 failed** (15088 total).
+
+## Current State rotation (2026-10-11, release 1.108.341)
+
+The 1.108.338 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.338):** **A .NET build tree and a NuGet restore tree stay out of the index** (#1001, @outoftheblue9): `obj/`/`bin/` pruned only beside a project file, `packages/` only on its own `.nupkg` (`security.py`). ⚠⚠ **A solution file is NOT a marker.** Residue L-142. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-09, release 1.108.339).
+
+The `Tests:` line's 1.108.338 count, verbatim:
+
+- ⚠ Prior (1.108.338): 15138 passed, 25 skipped, **0 failed** (15163 total).
+
+## Current State rotation (2026-10-11, release 1.108.342)
+
+The 1.108.339 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.339):** **The dynamic-import scan walks a Python file once** (L-147, #1005). ⚠⚠ **Never answer a per-name question in `_python_dynamic_imports` with `ast.walk(tree)` or a pass over `all_nodes`.** Residue L-148, L-149. Full text: `CHANGELOG.md`; verbatim in `ISSUE-HISTORY.md` (2026-10-10, release 1.108.340).
+
+The `Tests:` line's 1.108.339 count, verbatim:
+
+- ⚠ Prior (1.108.339): 15173 passed, 25 skipped, **0 failed** (15198 total).
+
+## Current State rotation (2026-10-11, release 1.108.343)
+
+The 1.108.340 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.340):** **ASP.NET Web Forms is indexed, and a handler wired in markup is referenced** (#1012, @outoftheblue9): language `aspx` (never a `razor` alias), ten XML-shaped .NET extensions as `xml`. ⚠⚠ **`.config`/`.settings` stay UNMAPPED until connection strings are redacted.** ⚠ A markup regex is one C call no parse budget interrupts: anchor every name (`tests/test_aspx_review_guards.py`). Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.340 count, verbatim:
+
+- ⚠ Prior (1.108.340): 15386 passed, 25 skipped, **0 failed** (15411 total).
+
+## Current State rotation (2026-10-11, release 1.108.344)
+
+The 1.108.341 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.341):** **The `index` CLI takes `--identity-mode`, and an existing directory is a local target however it is spelled** (#1017, @sKlat-beep): `_index_target_is_local` (`server.py`) is the one local-or-GitHub rule. ⚠⚠ **A URL-shaped target skips only the directory PROBE, on an ANCHORED match**; `://` anywhere in the string once moved `C://dir` to GitHub. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.341 count, verbatim:
+
+- ⚠ Prior (1.108.341): 15415 passed, 25 skipped, **0 failed** (15440 total).
+
+## Current State rotation (2026-10-11, release 1.108.345)
+
+The 1.108.342 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.342):** **`get_dead_code_v2`'s text fallback reads a file once** (L-150): `FileWords` (`tools/_call_graph.py`) answers which lines name a word. ⚠⚠ **Never answer a per-symbol question there with a pass over a file's text.** Residue L-152. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.342 count, verbatim:
+
+- ⚠ Prior (1.108.342): 15614 passed, 25 skipped, **0 failed** (15639 total).
+
+## Current State rotation (2026-10-12, release 1.108.346)
+
+The 1.108.343 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.343):** **`get_dead_code_v2` reads a file as text wherever its language records no call** (L-155, L-152): `_files_read_as_text` asks the INDEX per file. ⚠⚠ **Never gate caller evidence on a repository-wide test, and never on `_CALL_NODE_TYPES`** (it names PHP and Dart, which record none). Residue L-154, L-157, L-159, L-160. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.343 count, verbatim:
+
+- ⚠ Prior (1.108.343): 15775 passed, 25 skipped, **0 failed** (15800 total).
+
+## Current State rotation (2026-10-12, release 1.108.347)
+
+The 1.108.344 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.344):** **`get_dead_code_v2` asks every other text-read code file for a caller, import edge or not** (L-157): `_CallersElsewhere`. ⚠⚠ **The answer is kept per NAME**; per function it cost files times functions. ⚠ Weakest evidence in the tool, toward not reporting: limits in L-161. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.344 count, verbatim:
+
+- ⚠ Prior (1.108.344): 15809 passed, 25 skipped, **0 failed** (15834 total).
+
+## Current State rotation (2026-10-12, release 1.108.348)
+
+The 1.108.345 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.345):** **A name that starts or ends in a mark is matched as a token** (L-154): `word_rule.py` (Key Files). ⚠ Not a superset of the old rule; limits in L-163. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.345 count, verbatim:
+
+- ⚠ Prior (1.108.345): 16024 passed, 25 skipped, **0 failed** (16049 total).
+
+## Current State rotation (2026-10-12, release 1.108.349)
+
+The 1.108.346 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.346):** **A call through a receiver records the METHOD, never the receiver** (L-159): `_extract_call_name` reads the grammar's callee fields. ⚠⚠ **Never fall back to an identifier inside the callee.** `PARSER_GENERATION` 12. Residue L-158, L-164. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.346 count, verbatim:
+
+- ⚠ Prior (1.108.346): 16062 passed, 25 skipped, **0 failed** (16087 total).
+
+## Current State rotation (2026-10-12, release 1.108.350)
+
+The 1.108.347 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.347):** **A call inside a Rust macro invocation or `macro_rules!` body is recorded** (L-164): `_record_macro_calls`. ⚠⚠ **Each token is read ONCE, from the macro node down; never ask a node for its parent** (two versions were quadratic). `PARSER_GENERATION` 13. Residue L-165. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.347 count, verbatim:
+
+- ⚠ Prior (1.108.347): 16111 passed, 25 skipped, **0 failed** (16136 total).

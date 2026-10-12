@@ -1,29 +1,29 @@
 {
-  "current": "1.108.340",
+  "current": "1.108.350",
   "entries": [
     {
-      "version": "1.108.340",
-      "date": "2026-10-10",
-      "title": "ASP.NET Web Forms is indexed, and a handler wired in markup is referenced",
-      "summary": "ASP.NET Web Forms markup (.aspx, .ascx, .master, .asax, .ashx, .asmx) is indexed as its own language, `aspx`, and ten XML-shaped .NET files (.csproj, .resx, .xaml and others) as `xml`. An event handler wired only in markup (OnClick=\"btnSave_Click\") now reads as referenced, and pages, handlers and project files are roots, so the dead-code tools stop offering live Web Forms code for deletion. Contributed by @outoftheblue9. An existing C# index that holds one of the new file types over the size cap now reads as an inadequate corpus until `max_file_size` covers the file."
+      "version": "1.108.350",
+      "date": "2026-10-12",
+      "title": "a watched repo no longer stays stale after a commit, switch or pull",
+      "summary": "With `watch-all` running, a commit, `git switch` or pull that changed no working-tree file left the index reading `stale`, because the watcher only acted on file events and none arrived. The watcher now checks where HEAD points once a second and, when it has moved, runs the ordinary incremental index, which refreshes the stored commit. The check reads a few small files under `.git` and starts no process; `SECURITY.md` discloses it. Reported by @randyhbh (#1040). Not run on macOS, the reporter's platform; the CHANGELOG lists the limits."
     },
     {
-      "version": "1.108.339",
-      "date": "2026-10-09",
-      "title": "the dynamic-import scan walks a Python file once",
-      "summary": "Indexing a Python file that holds a dynamic import walked the file's whole syntax tree once or twice per literal table, once per loop variable and once per pass, a cost added in 1.108.320. The file is now walked once. A cold index of this project's own source is about an eighth faster on Linux, and the edges the scan returns are unchanged, so no index needs rebuilding. About a tenth of a cold index against the code before 1.108.320 is not recovered."
+      "version": "1.108.349",
+      "date": "2026-10-12",
+      "title": "a Java constructor reached only by super(...) is no longer reported as having no caller",
+      "summary": "A Java subclass constructor reaches its superclass's constructor with `super(...)`, which the parser recorded nothing for. So the constructor of a class that is only ever subclassed, which is every abstract class, was reported by `get_dead_code_v2` with no caller. `super(...)` now records the name the class extends. An existing index is re-parsed once. The effect is small: four constructors on gson. `this(...)`, an implicit super call and other languages' constructors (`__init__`, `constructor`, `initialize`) are not covered; the CHANGELOG lists the limits."
     },
     {
-      "version": "1.108.338",
-      "date": "2026-10-09",
-      "title": "a .NET build tree and a NuGet restore tree stay out of the index",
-      "summary": "A .NET project with no .gitignore indexed its build output as source. obj/ and bin/ are now pruned when a .csproj, .vbproj or .fsproj sits beside them (a solution file alone is not enough), .vs/ is always skipped, and a packages/ directory is pruned when a child holds the .nupkg NuGet wrote. Config keys skip_msbuild_output and skip_nuget_packages turn the two marker rules off. index_file applies neither rule and index_repo applies only the .vs/ skip. Contributed by @outoftheblue9 (#1001)."
+      "version": "1.108.348",
+      "date": "2026-10-12",
+      "title": "a Go, Java, C#, Rust or Ruby function called only from another file is no longer reported as having no caller",
+      "summary": "`get_dead_code_v2` looked for a caller in a function's own file and in the files that import it. In Go, Java, C#, Rust and Ruby a file calls another with no import between them, so a function called only from another file of its package, namespace or crate was reported with no caller. A function of such a language now has a caller when any symbol of the same language records a call of its name. Python, JavaScript and TypeScript are unchanged. The match is by name, so an uncalled function can hide behind any call of its name, a library method's included; the CHANGELOG lists the limits."
     },
     {
-      "version": "1.108.337",
-      "date": "2026-10-09",
-      "title": "a shutdown checkpoints a database without migrating it",
-      "summary": "At shutdown the server compacts the WAL of every database in its storage directory. It opened each one through the indexer's connection, which creates the index schema or runs the version migrations. A database still being created raised no such table out of the shutdown, any other SQLite file there (telemetry.db) gained the index tables, and a file that is not a database stopped the loop. The checkpoint now opens a plain connection and never raises. Index tables an earlier shutdown created in another database stay there."
+      "version": "1.108.347",
+      "date": "2026-10-12",
+      "title": "a Rust function called only inside a macro is no longer reported as having no caller",
+      "summary": "The Rust grammar leaves a macro's arguments as tokens, so a function called only inside `assert_eq!`, `vec!`, `println!` or a test macro had no caller on record, and `get_dead_code_v2` reported it with no caller. Rust tests are written almost entirely inside such macros. The parser now reads those tokens, and the body of each `macro_rules!` arm: a name directly followed by a parenthesised group is a call of that name. Every tool that reads call references inherits it. An existing index is re-parsed once. Tokens cannot tell a call from a pattern, so `Some(y)` inside a macro is recorded too; the CHANGELOG lists the limits."
     }
   ]
 }

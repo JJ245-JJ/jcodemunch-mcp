@@ -27,8 +27,12 @@ awareness), consistent with the rest of jCodemunch's AST-level analysis.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections import deque
 from typing import TYPE_CHECKING, Optional
+
+# THE word rule lives in a leaf every layer can import; never rebuild it here.
+from ..word_rule import word_pattern
 
 if TYPE_CHECKING:
     from ..storage import IndexStore
@@ -41,7 +45,219 @@ if TYPE_CHECKING:
 
 def _word_match(content: str, name: str) -> bool:
     """Return True if *name* appears as a word token in *content*."""
-    return bool(re.search(r"\b" + re.escape(name) + r"\b", content))
+    return bool(re.search(word_pattern(name), content))
+
+
+def _word_starts(content: str, name: str) -> list[int]:
+    """Offsets in *content* where *name* starts as a word token, in one scan.
+
+    Occurrences that overlap an earlier one are not listed; they share a
+    character with it, so a caller that maps offsets to lines loses nothing.
+    """
+    return [m.start() for m in re.finditer(word_pattern(name), content)]
+
+
+_WORD_RE = re.compile(r"\w+")
+_WORD_ONLY_RE = re.compile(r"\w+")
+# Every character ``str.splitlines`` cuts on. A name holding one can match
+# across two lines of the text, which a per-line index cannot see.
+_LINE_SEP_RE = re.compile("[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
+def words_of(text: str) -> list[str]:
+    """Each ``\\w+`` run of *text*, in order."""
+    return _WORD_RE.findall(text)
+
+
+def is_one_word(name: str) -> bool:
+    """True if *name* is made of word characters only (a plain identifier)."""
+    return _WORD_ONLY_RE.fullmatch(name) is not None
+
+
+def adjacent_word_pairs(text: str) -> list[tuple[str, str, str]]:
+    """``(word, separator, next word)`` for each two adjacent ``\\w+`` runs of *text*."""
+    pairs: list[tuple[str, str, str]] = []
+    previous, previous_end = None, 0
+    for match in _WORD_RE.finditer(text):
+        if previous is not None:
+            pairs.append((previous, text[previous_end:match.start()], match.group()))
+        previous, previous_end = match.group(), match.end()
+    return pairs
+
+
+class FileWords:
+    """Which lines of one file name what, from ONE pass over its text.
+
+    For a caller that asks ``_word_match`` about many names against the same
+    file (LEDGER L-150: one question per function, each a whole-file search).
+    ``lines_naming(name)`` is the ascending list of line indices where
+    ``_word_match(line, name)`` holds. Every line separator is a non-word
+    character, so for a name that holds none that is the same answer a search
+    over any subset of the lines joined by ``"\\n"`` gives.
+
+    ⚠ **Precondition: the name holds no line separator.** ``spans_lines(name)``
+    says whether it does; such a name can match across two lines, so its
+    caller must search the text itself. ``lines_naming`` raises on one
+    rather than answer "no line".
+
+    A name made only of word characters is a dictionary read. Any other name
+    (``do-thing``, ``ns::f``, ``$x``, ``save!``) is searched only on the lines
+    that hold its rarest word, because each ``\\w+`` run inside a matched name
+    is a whole word of the line. When asking those lines would cost more than
+    reading the whole text (their characters plus ``_ASK_COST`` each, against
+    the text's characters), and for a name with no word character (an
+    operator), the text is searched once for that name instead. Answers are
+    kept per name, so two hundred overloads of one name cost one lookup.
+
+    ``names`` asks only whether a line exists and stops at the first one, by
+    either route; ``lines_naming`` lists them all. A caller that needs
+    existence must ask ``names``: listing every line of a name that is on
+    every line costs a full scan where the first match would have done.
+
+    ⚠ **A search of the text is the floor, not zero.** N distinct compound
+    names whose every word is on most lines cost N searches of the text,
+    which is what asking ``_word_match`` once per name costs.
+
+    ⚠ Holds the file's lines and one list entry per distinct word per line:
+    several times the text. Build it for a file asked about more than once.
+    """
+
+    __slots__ = ("_lines", "_by_word", "_by_name", "_named", "_chars", "_text", "_line_starts")
+
+    # What asking one line costs beyond reading its characters, in characters
+    # of a scan (a substring test and, on a hit, one ``_word_match`` call).
+    _ASK_COST = 16
+
+    def __init__(self, content: str) -> None:
+        self._lines = content.splitlines()
+        by_word: dict[str, list[int]] = {}
+        for i, line in enumerate(self._lines):
+            for word in set(_WORD_RE.findall(line)):
+                by_word.setdefault(word, []).append(i)
+        self._by_word = by_word
+        self._by_name: dict[str, list[int]] = {}
+        self._named: dict[str, bool] = {}
+        self._chars = sum(len(line) for line in self._lines) + len(self._lines)
+        self._text: Optional[str] = None
+        self._line_starts: list[int] = []
+
+    def _joined(self) -> str:
+        if self._text is None:
+            starts, offset = [], 0
+            for line in self._lines:
+                starts.append(offset)
+                offset += len(line) + 1
+            self._line_starts = starts
+            self._text = "\n".join(self._lines)
+        return self._text
+
+    def _scan(self, name: str) -> list[int]:
+        """Lines naming *name*, from one scan of the text joined by newlines."""
+        text = self._joined()
+        found: list[int] = []
+        for offset in _word_starts(text, name):
+            line = bisect_right(self._line_starts, offset) - 1
+            if not found or found[-1] != line:
+                found.append(line)
+        return found
+
+    def _candidates(self, name: str) -> Optional[list[int]]:
+        """The lines worth asking about a compound *name*, or None to search the text.
+
+        None when *name* has no word to narrow by, and when asking the lines
+        that hold its rarest word would cost more than reading the text.
+        """
+        words = _WORD_RE.findall(name)
+        if not words:
+            return None
+        rarest = min((self._by_word.get(w, []) for w in words), key=len)
+        lines = self._lines
+        asking = self._ASK_COST * len(rarest)
+        if asking > self._chars:
+            return None
+        asking += sum(len(lines[i]) for i in rarest)
+        return None if asking > self._chars else rarest
+
+    @property
+    def line_count(self) -> int:
+        return len(self._lines)
+
+    def words(self):
+        """The distinct words of the file (each ``\\w+`` run of any line)."""
+        return self._by_word.keys()
+
+    def word_pairs(self) -> set[tuple[str, str, str]]:
+        """Every ``(word, separator, next word)`` of two adjacent words on a line.
+
+        A line that names ``do-thing`` holds the pair ``("do", "-", "thing")``,
+        so a file without that pair cannot name it. Far more selective than
+        either word. Not kept: one pass over the lines per call.
+        """
+        pairs: set[tuple[str, str, str]] = set()
+        for line in self._lines:
+            pairs.update(adjacent_word_pairs(line))
+        return pairs
+
+    def lines_naming(self, name: str) -> list[int]:
+        """Ascending indices of the lines that name *name* as a word."""
+        found = self._by_name.get(name)
+        if found is not None:
+            return found
+        if _LINE_SEP_RE.search(name):
+            raise ValueError("a name holding a line separator cannot be answered per line")
+        if _WORD_ONLY_RE.fullmatch(name):
+            found = self._by_word.get(name, [])
+        else:
+            candidates = self._candidates(name)
+            if candidates is None:
+                found = self._scan(name)
+            else:
+                lines = self._lines
+                found = [i for i in candidates if name in lines[i] and _word_match(lines[i], name)]
+        self._by_name[name] = found
+        self._named[name] = bool(found)
+        return found
+
+    @staticmethod
+    def spans_lines(name: str) -> bool:
+        """True if *name* holds a line separator and so cannot be asked here."""
+        return _LINE_SEP_RE.search(name) is not None
+
+    def names(self, name: str) -> bool:
+        """True if any line names *name*. Stops at the first one."""
+        named = self._named.get(name)
+        if named is not None:
+            return named
+        if _LINE_SEP_RE.search(name):
+            raise ValueError("a name holding a line separator cannot be answered per line")
+        if _WORD_ONLY_RE.fullmatch(name):
+            named = name in self._by_word
+        else:
+            candidates = self._candidates(name)
+            if candidates is None:
+                named = _word_match(self._joined(), name)
+            else:
+                lines = self._lines
+                named = any(name in lines[i] and _word_match(lines[i], name) for i in candidates)
+        self._named[name] = named
+        return named
+
+    def names_outside(self, name: str, start: int, end: int) -> bool:
+        """True if a line outside ``[start, end)`` names *name*.
+
+        The lines kept are those of ``lines[:start] + lines[end:]``, read the
+        way a slice reads them: an ``end`` at or before ``start`` removes
+        nothing, and a negative bound counts from the end of the file.
+        """
+        found = self.lines_naming(name)
+        if not found:
+            return False
+        count = len(self._lines)
+        if start < 0:
+            start = max(0, count + start)
+        if end < 0:
+            end = max(0, count + end)
+        return found[0] < start or found[-1] >= end
 
 
 def _symbol_body(file_lines: list[str], sym: dict) -> str:
@@ -161,6 +377,27 @@ class _CalleeNameIndex:
 # ---------------------------------------------------------------------------
 # Direct caller / callee finders
 # ---------------------------------------------------------------------------
+
+#: Languages whose files call each other with NO import between the two files.
+#: Two files of one Go package, two classes of one Java package and two C#
+#: files of one namespace need none; a Rust path call
+#: (``crate::flags::config::args()``) needs no ``use``; a Ruby ``require`` is
+#: global to the process; Kotlin (one package), Swift (one module) and PHP
+#: (one namespace, or an autoloader) are the same. For these the import graph
+#: cannot say which files may call a function, so "no importer calls it" is
+#: not "nothing calls it" (LEDGER L-165).
+#:
+#: ⚠ A property of the LANGUAGE, not of what a parser records: whether a
+#: language's calls are recorded at all is asked of the index
+#: (``get_dead_code_v2._files_read_as_text``), never of a list.
+#: Kotlin, Swift and PHP record no call today (L-158) and are read as text; they
+#: are listed so the fix for that inherits this rule.
+#: ⚠⚠ **Python, JavaScript, TypeScript and Dart must stay out.** A file there calls
+#: only what it imports or defines, so a same-named call in a file that does
+#: not import the function is a call of another function.
+LANGUAGES_CALLED_ACROSS_FILES_WITHOUT_AN_IMPORT: frozenset[str] = frozenset(
+    {"go", "java", "csharp", "rust", "ruby", "kotlin", "swift", "php"}
+)
 
 def _callers_from_references(
     index: "CodeIndex",
