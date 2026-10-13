@@ -608,7 +608,26 @@ INDEX_VERSION = 17
 #   constructor, by the name the class extends. It recorded nothing, so the
 #   constructor of a class that is only subclassed read as never called.
 #   No symbol id moves; only `call_references` changes, on UNCHANGED content.
-PARSER_GENERATION = 14
+#
+# 15 (L-170): a C# `new Made(...)` records the class it creates. It recorded
+#   nothing, so a C# constructor read as never called however often its class
+#   was created. No symbol id moves; only `call_references` changes, on
+#   UNCHANGED content.
+#
+# 16 (L-171): a Go call the grammar reads as a conversion to a generic type
+#   (`Generic[int](1)`, `fs[i](1)`) records what it calls. It recorded
+#   nothing. No symbol id moves; only `call_references` changes, on UNCHANGED
+#   content.
+#
+# 17 (L-172): a Ruby method called with no receiver and no arguments
+#   (`settings`) records a call where the method around it has introduced no
+#   local of that name. It recorded nothing unless it was a receiver. No
+#   symbol id moves; only `call_references` changes, on UNCHANGED content.
+#
+# 18 (L-173 item 7): a JavaScript or TypeScript call through a string key
+#   (`t["m"]()`) records the member. It recorded the container. No symbol id
+#   moves; only `call_references` changes, on UNCHANGED content.
+PARSER_GENERATION = 18
 
 
 @dataclass(frozen=True)

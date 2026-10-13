@@ -2451,3 +2451,63 @@ The 1.108.347 entry, verbatim as it stood in `CLAUDE.md`:
 The `Tests:` line's 1.108.347 count, verbatim:
 
 - ⚠ Prior (1.108.347): 16111 passed, 25 skipped, **0 failed** (16136 total).
+
+## Current State rotation (2026-10-12, release 1.108.351)
+
+The 1.108.348 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.348):** **`get_dead_code_v2` counts a call from another file where the language needs no import** (L-165): `LANGUAGES_CALLED_ACROSS_FILES_WITHOUT_AN_IMPORT`. ⚠⚠ **Python, JS and TS stay out.** ⚠ By name: hides an uncalled function behind any call of its name. Residue L-166. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.348 count, verbatim:
+
+- ⚠ Prior (1.108.348): 16128 passed, 25 skipped, **0 failed** (16153 total).
+
+## Current State rotation (2026-10-12, release 1.108.352)
+
+The 1.108.349 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.349):** **A Java `super(...)` records the superclass's constructor** (L-166): `_record_super_constructor_calls` reads the class node DOWN. `PARSER_GENERATION` 14. ⚠ `__init__`, `constructor` and `initialize` still read `no_callers`: L-167. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.349 count, verbatim:
+
+- ⚠ Prior (1.108.349): 16157 passed, 25 skipped, **0 failed** (16182 total).
+
+## Current State rotation (2026-10-12, release 1.108.353)
+
+The 1.108.350 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.350):** **The watcher follows a HEAD move that changed no file** (#1040): `_reconcile_head_move` runs the ordinary incremental index. ⚠⚠ **Never a bare SHA rewrite**: it marks unread files `fresh`. ⚠ Reads under `.git` are bounded and in `SECURITY.md`. Residue L-168. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.350 count, verbatim:
+
+- ⚠ Prior (1.108.350): 16204 passed, 25 skipped, **0 failed** (16229 total).
+
+## Current State rotation (2026-10-13, release 1.108.354)
+
+The 1.108.351 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.351):** **Creating a class counts as a call of its constructor** (L-167): `constructors_as_their_classes` hands `get_dead_code_v2` each `__init__`/`constructor` as its class. ⚠⚠ **A subclass joins its base only from the base's file or an importer** (by name across the index was quadratic). ⚠ Ruby not covered: L-172. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.351 count, verbatim:
+
+- ⚠ Prior (1.108.351): 16243 passed, 25 skipped, **0 failed** (16268 total).
+
+## Current State rotation (2026-10-13, release 1.108.355)
+
+The 1.108.352 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.352):** **An initialiser outside every function is read for callers** (L-169): `_residue_text` keeps the lines of `STATE_KINDS` symbols. ⚠⚠ **A line a function or method holds stays out** (zod loses 265 rows, not 158, without it). ⚠ Text, not calls: L-173. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.352 count, verbatim:
+
+- ⚠ Prior (1.108.352): 16285 passed, 25 skipped, **0 failed** (16310 total).
+
+## Current State rotation (2026-10-13, release 1.108.356)
+
+The 1.108.353 entry, verbatim as it stood in `CLAUDE.md`:
+
+- **Prior (1.108.353):** **A C# `new Made()` records the class it creates** (L-170): `object_creation_expression` is a C# call node. `PARSER_GENERATION` 15. ⚠ A target-typed `new()`, `: base(...)` and an attribute record nothing: L-174. Full text: `CHANGELOG.md`.
+
+The `Tests:` line's 1.108.353 count, verbatim:
+
+- ⚠ Prior (1.108.353): 16321 passed, 25 skipped, **0 failed** (16346 total).

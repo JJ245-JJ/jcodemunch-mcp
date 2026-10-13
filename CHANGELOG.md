@@ -2,6 +2,309 @@
 
 ## [Unreleased]
 
+## [1.108.356] - 2026-10-13 - a JavaScript method called through a string key is recorded as called
+
+### Fixed - a JavaScript method called through a string key recorded the wrong name (LEDGER L-173)
+
+JavaScript and TypeScript reach a member by a string as well as by a dot: `t["m"]()` calls what
+`t.m()` calls. The grammar gives the first a `subscript_expression`, and the parser resolved
+every subscript to its container, the rule for `fs[0]()` where an element has no name. So the
+call recorded `t`, the method `m` recorded nothing, and a method called only that way read
+`no_callers` in `get_dead_code_v2`: live code reported dead. Found fixing L-159.
+
+A key that is a string holding a name is read as the name now: in single or double quotes, or
+a template with no substitution, behind `?.`, `new`, parentheses or TypeScript's `!`. A name is
+what could follow a dot: letters of any script, digits not first, `_` and `$`. Any other key
+resolves to the container as before: a variable, a number, a string that is not a name
+(`"a-b"`, `"a.b"`, `""`, one with an escape), a template with a substitution, two strings
+joined. Other languages are unchanged, because there a string key reaches an element of a
+container: PHP's `$t["m"]()` is the same node type with no `index` field, and Python's, Go's
+and C#'s subscripts are other node types.
+
+Measured by parsing eight pinned clones with both trees, 1,959 files
+(`evidence/refs_l173.txt`): no symbol's references change. The reviewer's scan of those clones
+found one call through a string key, zod's `this["~validate"](data)`, and `~validate` is not a
+name, so the fix leaves it alone. The effect is on a method whose only call is through a string
+that holds a name, and it is shown by the tests and not by a corpus.
+
+What it does not do:
+
+- **The container is no longer recorded** for a string key, as it never was for a dot. A
+  function held in a table and called as `handlers["save"]()` records `save`, and a project
+  function named `save` anywhere counts as called. Toward not reporting.
+- **A key that is not written as one string is not read**: a string in parentheses
+  (`t[("m")]()`), a constant (`const K = "m"; t[K]()`), a joined string. The container is
+  recorded.
+- **A member read by a string and not called records nothing** (`const f = t["m"]`), as
+  `t.m` records nothing.
+- **A method declared with a string that is not a name is not reached**: zod's
+  `"~validate"(data) {}` is stored with its quotes and its call records nothing, on both trees.
+
+`PARSER_GENERATION` is 18, so an existing index is re-parsed: the fix changes what unchanged
+files record. The rest is LEDGER L-174. Sixteen mutants each fail the tests
+(`evidence/mutants.txt`).
+
+## [1.108.355] - 2026-10-13 - a Ruby method called by its bare name is recorded as called
+
+### Fixed - a Ruby method called by its bare name recorded no call (LEDGER L-172)
+
+Ruby writes a call of a method with no receiver and no arguments as a bare name: `settings`.
+The grammar gives that the `identifier` node of a local variable, and the parser read only
+`call` nodes, so the commonest way one Ruby method calls another recorded nothing unless the
+name happened to be a receiver (`settings.environment`). A helper called only by its bare name
+read `no_callers` in `get_dead_code_v2`: live code reported dead. Found fixing L-159.
+
+Ruby itself settles what a bare name is by what the method has done so far: it is a local
+variable once a parameter, an assignment, a block parameter, a pattern capture or
+`rescue => e` has introduced it, and a method call otherwise. The parser now reads each method
+that way (`_record_bare_ruby_calls`), from the method node down, once, in source order, so
+`y = x; x = 2` reads the first `x` as a call. A nested `def` is a scope of its own, and so is
+a class or module body inside a method. A setter's own name (`def host=(v)`) is not a call of
+the reader. The object of `def obj.m`, a block's implicit parameter (`it`, `_1` to `_9`) and a
+name in a stretch the grammar could not parse are not calls either.
+
+Measured on sinatra at a pinned commit, read and parsed only
+(`evidence/measure_dead_l172.txt`): in the default call 176 methods carried `no_callers`
+before and 152 after; with `include_tests=True`, 326 and 294. No row is newly reported.
+`evidence/cleared_sinatra_l172.txt` names, for each of the 32 rows that left, a method that
+gained the name; none left another way. Parsing eight pinned clones with both trees, 1,959
+files (`evidence/refs_l172.txt`), only Ruby changes: 192 symbols gain 224 names, none is
+removed, and no symbol id moves. Ruby's parse time in that run was 0.47 s before and 0.50 s
+after.
+
+What it does not do:
+
+- **Code outside every method is not read.** A bare call in a class body, in a top-level
+  block or in a `define_method` block belongs to no method symbol, as before. Sinatra's own
+  route blocks are that.
+- **The match is by name within Ruby**, as for every Ruby call since L-165: a bare `params` or
+  `request` that is a library's method also counts for a project method of that name. Toward
+  not reporting.
+- **A local it cannot see is read as a call**: one made by a regular expression's named
+  capture (`/(?<year>\d+)/ =~ s`), by `binding.local_variable_set` or by `eval`. Toward not
+  reporting.
+- **A block parameter stays a local to the end of its method**, where Ruby ends it with its
+  block. Toward reporting.
+- **A shorthand argument or hash value records no call**: `f(x:)` and `{x:}` name `x` with
+  no node for it. Nor does a name inside a pinned expression in a pattern (`in ^(limit)`).
+  Toward reporting; both from the review's probes.
+- **A receiver is still recorded whether or not it is a local** (`items.each` records `items`
+  when `items` is a parameter): the L-159 rule, unchanged.
+- **A method's bare calls are listed before its other calls.** On sinatra 17 methods hold the
+  names they already had in a new order, which is the order `get_call_hierarchy` lists
+  their callees in.
+- **`initialize` is still never called by that word** (`T.new` records `new`).
+
+`PARSER_GENERATION` is 17, so an existing index is re-parsed: the fix changes what unchanged
+Ruby files record. `get_repo_health` reads the dead-code tool, so its dead-code share can fall
+for a Ruby repository. The rest is LEDGER L-173. Thirty-six mutants each fail the tests
+(`evidence/mutants.txt`).
+
+## [1.108.354] - 2026-10-13 - a Go generic function called with one argument is recorded as called
+
+### Fixed - a Go generic function called with one argument recorded no call (LEDGER L-171)
+
+Go's grammar cannot tell `Generic[int](1)`, a generic function called with one argument, from
+`List[int](y)`, a conversion to a generic type. It parses both as a
+`type_conversion_expression` whose type is a `generic_type`, and that node was not among the
+ones the parser reads as calls. So the call recorded nothing, and a generic function called
+only that way read `no_callers` in `get_dead_code_v2`: live code reported dead. With two call
+arguments, or none, the grammar gives a `call_expression`, which was always recorded, so the
+defect depended on how many arguments a call happened to have. Found fixing L-159.
+
+`fs[i](1)` is the same node when the index is a bare name, so a function taken from a slice or
+a map by a variable recorded nothing either, where `fs[0](1)` recorded `fs`. That was a second
+finding of the same ledger row (`t.fs[i](x)`), and the one change fixes both.
+
+The node is a Go call node now, and its name is reached by the tables every other call uses:
+`Generic[int](1)` and `pkg.Generic[int](1)` record `Generic`, `fs[i](1)` and `t.fs[i](x)`
+record `fs`. The call is recorded behind a dereference and in parentheses too
+(`*Ptr[int](y)`, `(Generic[int])(1)`, `*fs[i](y)`): the review found those still recording
+nothing. A conversion to a type that is not a name (`[]byte(s)`, `map[string]int(m)`,
+`chan int(c)`, `func(int) int(f)`, `(*T)(p)`, `(*[]int)(p)`) records nothing, as before, and
+neither does a generic composite literal or a declaration.
+
+Measured by parsing eight pinned clones with both trees, 1,959 files
+(`evidence/refs_l171.txt`; commits in `evidence/corpora_l171.txt`): 24 symbols gain one name
+each, 23 on lo and 1 on gin (`Context.Next`, which calls `c.handlers[c.index](c)`). No name is
+removed, no symbol's references are reordered, no symbol id moves, and no language but Go
+changes. Through `get_dead_code_v2` on lo and gin (`evidence/measure_dead_l171.txt`) no
+`no_callers` row moves, in the default call or with `include_tests=True`: each function that
+gained a caller there already had one on record. The fix is for a function whose only call has
+this shape; these two corpora hold none.
+
+What it does not do:
+
+- **A real conversion to a generic type records the type's name.** `iter.Seq[T](f)` records
+  `Seq`: 7 of the 23 names added on lo are that. So do `pkg.List[int](y)` and
+  `(*List[int])(p)`. The grammar gives a conversion and a call the same tree, and the name is
+  recorded bare, whatever its package. Toward not reporting.
+- **A function value in a container is recorded as the container** (`fs`, `handlers`), as
+  `fs[0](1)` always was. The functions stored in it are not known.
+
+`PARSER_GENERATION` is 16, so an existing index is re-parsed: the fix changes what unchanged
+Go files record. The rest is LEDGER L-172. Sixteen mutants each fail the tests
+(`evidence/mutants.txt`): seven reintroduce the defect or one of its spellings, six make a
+conversion to an unnamed type record a name, and three remove a rule the file relies on.
+
+## [1.108.353] - 2026-10-12 - a C# constructor is no longer reported as having no caller when its class is created
+
+### Fixed - a C# constructor was reported as having no caller however often its class was created (LEDGER L-170)
+
+A C# constructor is named for its class, and the only way to call it by that name is
+`new Made(...)`. Java's `new Base()` records `Base` and JavaScript's `new K()` records `K`. C#'s
+`object_creation_expression` was not among the nodes the parser reads as calls, so creating a
+class recorded nothing. `get_dead_code_v2` then found no caller of the constructor and reported
+it with `no_callers`: live code reported dead, in a tool whose rows feed delete decisions. Found
+fixing L-159.
+
+`new Made(...)` now records `Made`, with or without arguments, with an object initialiser, for a
+generic class (`new Made<int>()`), a qualified one (`new Ns.Made()`, `new Outer.Made()`) and an
+alias-qualified one (`new global::Ns.Made()`). The callee is resolved by the tables every other
+call uses (`_CALLEE_MEMBER_FIELD` gained C#'s two qualified-name nodes); no second rule was
+written. An array (`new Made[3]`, `stackalloc Made[2]`) creates no instance and records
+nothing, as do a cast, a type test and `typeof`.
+
+Measured through `get_dead_code_v2` on pinned clones, read and parsed only
+(`evidence/measure_dead_l170.txt`, with each commit): on RestSharp, in the default call, 101
+functions carried `no_callers` before and 73 after; with `include_tests=True`, 625 and 596. All
+the rows that left (28, and 29) are constructors, and no row is newly reported. gson, zod, ripgrep and this repository's `src/` did not move; of eleven languages
+probed with a qualified callee, only C#'s output changed (`evidence/other_languages_*_l170.txt`).
+
+What it does not do (`evidence/shapes_l170.txt`):
+
+- **A target-typed `new()` records nothing.** `Made x = new();` names the class on the
+  target, not in the expression.
+- **`: base(...)`, `: this(...)`, a primary constructor's base call and an attribute
+  (`[Made(1)]`) record nothing**, as before.
+- **A `new` in a field or property initialiser, or in a top-level statement, is in no
+  function**, so no call reference holds it.
+- **10 constructors on RestSharp are still reported** in the default call (38 before); 35 with
+  `include_tests=True` (64 before). Which are test classes a runner creates and which are
+  reached one of the ways above was not looked into.
+- **The match is by name within C#**, as for every C# call since L-165: `new Made()` of a
+  library class also counts for a project constructor, or method, named `Made`. RestSharp's
+  recorded call references rise from 3756 to 5114. `new T()` on a type parameter records `T`.
+  Toward not reporting.
+
+`PARSER_GENERATION` is 15, so an existing index is re-parsed: the fix changes what unchanged
+C# files record. `get_call_hierarchy` and `get_impact_preview` read the same references but
+keep their import-edge rule: by the reviewer's probe a method that creates the class in the
+constructor's own file is listed as its caller now, and one in another C# file is not.
+`get_repo_health`
+reads the dead-code tool, so its dead-code share can fall for a C# repository. The rest is
+LEDGER L-171. Twelve reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+## [1.108.352] - 2026-10-12 - a function used only in a constant or a dispatch table is no longer reported as having no caller
+
+### Fixed - a function used only in a constant's initialiser or a dispatch table was reported as having no caller (LEDGER L-169)
+
+A call written outside every function belongs to no function, so no call reference records it.
+`get_dead_code_v2` reads that code as text instead: each file with its symbols' lines taken out.
+It took out every symbol's lines, and a constant, a variable and a class field are symbols. So
+the place a module-level call is usually written, the right-hand side of an assignment, was
+removed before it was read. A function used only as `ONE = helper()`, or named only in a
+dispatch table, read `no_callers` in Python, JavaScript, TypeScript, Go, Java, C# and Rust. Live
+code reported dead, in a tool whose rows feed delete decisions. Found fixing L-167.
+
+The lines of a constant, variable, field or property are read now, in the function's own file
+and in the files that import it. Three things keep that from counting what is not a use: the
+name the line declares is blanked once (`int size;` is not a use of `size()`; Ruby's
+`@@after_reload` is blanked sigil and all), what sits inside quotes on one line is removed
+(`NAMES = ["helper"]` is text; an apostrophe is a quote only in languages that write strings
+with one, so a Rust lifetime is not), and a line that a function or method holds stays out,
+since its body is answered by its call references. Nothing is re-parsed.
+
+Measured through `get_dead_code_v2` on pinned clones, read and parsed only
+(`evidence/measure_dead_l169.txt`, with each commit), rows with `no_callers` before and after:
+this repository's `src/` 426 and 375, zod 844 and 686, RestSharp 654 and 625, sinatra 327 and
+326, ripgrep 536 and 534; express, gin and gson did not move. No row is newly reported on any
+of the eight. `evidence/cleared_src_l169.txt` shows, for each of the 51 rows that left `src/`,
+a line that names it in a file the tool reads for it: by this session's reading 46 are named
+in an initialiser's code (42 of them entries of five dispatch tables), one is a class created
+in a constant, and 4 are not uses: two named in a comment, one in a string that spans lines,
+one by a keyword argument of its name. The reviewer read the 158 rows that left zod and
+judged 141 a use and 17 not (its own script and reading, in no evidence file here).
+
+What this does not do:
+
+- **It reads text, not calls.** On a line it reads, every word counts as a use of a function,
+  a method or a class of that name: a comment, a string that spans lines or sits in
+  backticks, an object key or keyword argument (`size: 3`, `name=1`), a destructuring key, a
+  type annotation (`x: string`, `parent: Optional[T] = None`, which counts as creating `T`)
+  and a modifier (`readonly`). Those are the 4 rows above and the reviewer's 17 on zod.
+  Toward not reporting.
+- **A function written inside an initialiser that is not a symbol of its own is read as text
+  with it** (an unnamed handler in a table). What it calls was invisible before and is counted
+  now; a property it reads (`b.size`) also counts as a use of a method of that name. A
+  method or function that is a symbol is not read this way: with those read too, zod loses
+  265 rows and not 158 (`evidence/guard_l169.txt`).
+- **The mode with no import graph is unchanged** (gson): it reads no code outside functions.
+- **A use in another file is seen only through an import.** Go, Java, C# and Rust files call
+  each other with none, and a call in another file's initialiser there is still not counted.
+- **A name used only as text is not a use**: a function looked up by a quoted name is still
+  reported.
+- **A very large constant costs a read**: the reviewer measured 20 files of 455,149 bytes,
+  each one 5,000-line table, at 0.070 s before and 0.359 s after.
+
+`get_repo_health` reads this tool, so its dead-code share falls, and its grade can rise, by the
+rows no longer reported. The rest is LEDGER L-170. Sixteen reintroduced defects each fail the
+tests
+(`evidence/mutants.txt`).
+
+## [1.108.351] - 2026-10-12 - the constructor of a class that is created is no longer reported as having no caller
+
+### Fixed - the constructor of a class that is created was reported as having no caller (LEDGER L-167)
+
+Python, JavaScript and TypeScript name a constructor with a fixed word, and nothing calls it by
+that word: `T()` records a call of `T`, `new K()` a call of `K`. `get_dead_code_v2` looked for a
+caller of the name `__init__` or `constructor`, found none, and reported the constructor with
+`no_callers` however often its class was created. Live code reported dead, in a tool whose rows
+feed delete decisions. Found fixing L-166.
+
+A constructor now has a caller when its class has one, by the rule a function has: the class's
+name is called in its own file or in a file that imports it, inside a function or outside every
+one. The tool asks its existing questions a second time, of the class, and files the answer
+under the constructor (`_call_graph.constructors_as_their_classes`); no second rule was written,
+and nothing is re-parsed. A class that is created runs the constructor it inherits, so creating
+a subclass counts for each class it extends, where the subclass is in its base's file or in a
+file that imports it. Python's `__new__` is counted with `__init__`.
+
+Measured through `get_dead_code_v2` on pinned clones, read and parsed only
+(`evidence/measure_dead_l167.txt`, with each commit): on this repository's `src/`, 42 functions
+named `__init__` carried `no_callers` before and 13 after, of 455 rows before and 426 after; on
+zod, 13 named `constructor` before and 4 after, of 853 and 844. Every row that left is a
+constructor, and no row is newly reported on either, on express or on sinatra. The cost does
+not grow with a shared name: 800 files, each with its own `Base` and five subclasses that are
+all created, take 1.35 s before and 1.36 s after (`evidence/cost_l167.txt`). Where the classes
+are never created the files are read a second time, and the reviewer measured the same 800
+files at 1.47 s before and 3.38 s after. `get_repo_health` reads this tool,
+so its dead-code share falls, and its grade can rise, by the constructors no longer reported.
+
+What this does not do:
+
+- **A Ruby `initialize` is still reported**: 27 of the 327 rows on sinatra, before and after.
+  `T.new(1)` records `new` and not `T`, so there is no recorded call of the class to count.
+- **A class created only in a Python constant's initialiser or a class attribute is not seen**
+  (`ONE = T()`). Nothing is: a function called there reads `no_callers` too, on both trees
+  (`evidence/shapes_l167.txt`). One of the 13 left on `src/` is this.
+- **A subclass counts only where its base is written as a bare name**, and only from the
+  base's file or a file that imports it. `class Kid(a.Base)` and `class Kid extends ns.Base`
+  join nothing. In an index with no import at all, a subclass counts in its base's own file
+  only, so script files that share globals leave the base's constructor reported.
+- **A class created by something that is handed it is not seen**: ten of the 13 left on `src/`
+  are context providers a registry creates.
+- **Toward not reporting, by design**: two classes of one name in one file are both taken as
+  the base; a subclass constructor that never calls up still counts for the classes it
+  extends; an import line that names the class counts as a use, as it does for a function; a
+  class created only inside one of its own methods counts as created; and a function that
+  shares the class's name, called in a file that imports the class, counts as creating it.
+- **`get_call_hierarchy` and `check_delete_safe` were not changed**: asked about a constructor,
+  they do not list the places its class is created.
+
+The rest is LEDGER L-169. Sixteen reintroduced defects each fail the tests
+(`evidence/mutants.txt`).
+
 ## [1.108.350] - 2026-10-12 - a watched repo no longer stays stale after a commit, switch or pull
 
 ### Fixed - a watched repo stayed `stale` after a commit, switch or pull that changed no file (#1040)

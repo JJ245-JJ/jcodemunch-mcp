@@ -119,7 +119,10 @@ _CALL_NODE_TYPES: dict[str, set[str]] = {
     "javascript": {"call_expression", "new_expression"},
     "typescript": {"call_expression", "new_expression"},
     "tsx": {"call_expression", "new_expression"},
-    "go": {"call_expression"},
+    # `type_conversion_expression`: the grammar cannot tell `Generic[int](1)`
+    # or `fs[i](1)` from a conversion to a generic type, and gives all three
+    # this node. A conversion to a type with no name records nothing (L-171).
+    "go": {"call_expression", "type_conversion_expression"},
     # `macro_invocation` and `macro_definition`: a macro's arguments and a
     # `macro_rules!` body are tokens the grammar does not parse
     # (`_record_macro_calls`, LEDGER L-164).
@@ -129,8 +132,13 @@ _CALL_NODE_TYPES: dict[str, set[str]] = {
     # (`_record_super_constructor_calls`, LEDGER L-166).
     "java": {"method_invocation", "object_creation_expression", "class_declaration"},
     "php": {"function_call_expression", "method_call_expression", "scoped_call_expression"},
-    "ruby": {"call", "method_call"},
-    "csharp": {"invocation_expression"},
+    # `method` and `singleton_method`: a method called with no receiver and no
+    # arguments is a bare `identifier`, the node of a local variable, and only
+    # the method around it says which it is (`_record_bare_ruby_calls`, L-172).
+    "ruby": {"call", "method_call", "method", "singleton_method"},
+    # `object_creation_expression`: a C# constructor is named for its class,
+    # so `new Made()` is the only call of it there is (LEDGER L-170).
+    "csharp": {"invocation_expression", "object_creation_expression"},
     "kotlin": {"call_expression"},
     "dart": {"function_expression_invocation"},
     "swift": {"call_expression"},
@@ -161,6 +169,9 @@ _CALLEE_MEMBER_FIELD: dict[str, Optional[str]] = {
     "member_access_expression": "name",      # C#: a.M, this.M, base.M
     "member_binding_expression": "name",     # C#: the `.M` of a?.M
     "conditional_access_expression": None,   # C#: a?.M
+    "qualified_name": "name",                # C#: new Ns.Type()
+    "alias_qualified_name": "name",          # C#: new global::Type()
+    "qualified_type": "name",                # Go: pkg.F[T](x), t.fs[i](x)
     "scoped_type_identifier": None,          # Java: new pkg.Type()
     "annotated_type": None,                  # Java: extends @Ann Type
 }
@@ -171,7 +182,7 @@ _CALLEE_MEMBER_FIELD: dict[str, Optional[str]] = {
 _CALLEE_WRAPPER_FIELD: dict[str, Optional[str]] = {
     "generic_function": "function",          # Rust: f::<T>
     "generic_name": None,                    # C#: F<T>
-    "generic_type": None,                    # Java: new Type<T>()
+    "generic_type": None,                    # Java: new Type<T>(); Go: F[T](x)
     "non_null_expression": None,             # TypeScript: f!
     "parenthesized_expression": None,        # (t.m)()
     "index_expression": "operand",           # Go: fs[0], and F[T]
@@ -179,6 +190,8 @@ _CALLEE_WRAPPER_FIELD: dict[str, Optional[str]] = {
     "subscript_expression": "object",        # JavaScript: fs[0]
     "element_access_expression": "expression",  # C#: fs[0]
     "postfix_unary_expression": None,        # C#: f!
+    "pointer_type": None,                    # Go: *F[T](x), the call's result dereferenced
+    "parenthesized_type": None,              # Go: (F[T])(x)
 }
 
 #: C#'s `a?[0]`: the last child of the conditional access is the `[0]`, which
@@ -193,11 +206,39 @@ _RUST_MACRO_DEFINITION = "macro_definition"
 _RUST_MACRO_NODES = frozenset({_RUST_MACRO_INVOCATION, _RUST_MACRO_DEFINITION})
 #: A Java class holds `super(...)` calls; it is not a call, and it has no callee.
 _JAVA_CLASS_DECLARATION = "class_declaration"
+#: A Ruby method holds bare calls; it is not a call, and it has no callee.
+_RUBY_METHOD_NODES = frozenset({"method", "singleton_method"})
 _CALL_NODES_OF_ANY_LANGUAGE = frozenset(
     t for types in _CALL_NODE_TYPES.values() for t in types
-) - _RUST_MACRO_NODES - {_JAVA_CLASS_DECLARATION}
+) - _RUST_MACRO_NODES - {_JAVA_CLASS_DECLARATION} - _RUBY_METHOD_NODES
 #: A callee nests one level per `.`, `::`, `<>` or `()`; past this it has no name.
 _CALLEE_MAX_DEPTH = 64
+
+#: JavaScript and TypeScript reach a member by a string too: `t["m"]()` calls
+#: what `t.m()` calls. The key is a `string`, or a `template_string` with no
+#: substitution, with one part that reads as a name (LEDGER L-173 item 7).
+#: ⚠ Three things keep every other grammar out, and each is needed: the node
+#: is named `subscript_expression` (PHP's is too), its key is in the `index`
+#: field (PHP's has no field; Go's `index_expression` and Java's
+#: `array_access` have one), and the key is one of these two node types (Go's
+#: string literals are neither). In those languages a string key reaches an
+#: element of a container, not a member.
+_JS_KEYED_MEMBER = "subscript_expression"
+_JS_STRING_KEYS = frozenset({"string", "template_string"})
+
+
+def _js_string_key_name(node) -> Optional[str]:
+    """The member a subscript reaches when its key is a string holding a name, or None.
+
+    A name is what could be written after a dot: letters of any script, digits
+    not first, `_` and `$`. A method declared with a string that is not a name
+    (`"~validate"(data) {}`) is not reached by this: LEDGER L-174.
+    """
+    key = node.child_by_field_name("index")
+    if key is None or key.type not in _JS_STRING_KEYS or key.named_child_count != 1:
+        return None
+    text = key.named_children[0].text.decode("utf-8", errors="replace")
+    return text if text.replace("$", "_").isidentifier() else None
 
 
 def _callee_first_named(node):
@@ -240,6 +281,8 @@ def _extract_call_name(node, source_bytes: bytes) -> Optional[str]:
       ``a?.M()``, ``this.m()``) -> the member
     - a generic, parenthesised or chained callee -> the name underneath
     - an element of a container (``fs[0]()``) -> the container
+    - a JavaScript member reached by a string that holds a name (``t["m"]()``)
+      -> the member
     - a function literal called in place, or a callee of a type not named in
       the tables above -> None
 
@@ -269,6 +312,10 @@ def _extract_call_name(node, source_bytes: bytes) -> Optional[str]:
                 member = current.child_by_field_name(_CALLEE_CONDITION_FIELD)
             current = member
         elif kind in _CALLEE_WRAPPER_FIELD:
+            if kind == _JS_KEYED_MEMBER:
+                keyed = _js_string_key_name(current)
+                if keyed is not None:
+                    return keyed
             field = _CALLEE_WRAPPER_FIELD[kind]
             inner = current.child_by_field_name(field) if field else None
             current = inner if inner is not None else _callee_first_named(current)
@@ -449,7 +496,7 @@ def _record_super_constructor_calls(node, source_bytes: bytes, calls: list[tuple
     Read from the class node DOWN: its direct constructors, and the first
     statement of each. ⚠ Since JDK 25 statements may come before the call
     (``Kid(int x) { check(x); super(x); }``); the grammar here parses that
-    ``super`` as an error node, so it records nothing (L-167).
+    ``super`` as an error node, so it records nothing (L-169).
     ⚠ Never from the call node up. Asking a node for its parent costs the depth
     of the tree, once per call (L-164).
     ⚠ ``this(...)`` is left out. It calls a constructor of the enclosing one's
@@ -477,6 +524,97 @@ def _record_super_constructor_calls(node, source_bytes: bytes, calls: list[tuple
             calls.append((first.start_byte, name))
 
 
+#: Ruby nodes whose `identifier` children are names being INTRODUCED: a
+#: parameter list, the targets of a multiple assignment, `rescue => e`.
+_RUBY_NODES_THAT_DECLARE_THEIR_NAMES = frozenset({
+    "method_parameters", "block_parameters", "lambda_parameters", "destructured_parameter",
+    "left_assignment_list", "destructured_left_assignment", "rest_assignment", "exception_variable",
+})
+#: Ruby parameters with a default: the `name` is introduced, the `value` is read.
+_RUBY_NODES_THAT_DECLARE_THEIR_NAME_FIELD = frozenset({
+    "optional_parameter", "keyword_parameter", "splat_parameter", "hash_splat_parameter", "block_parameter",
+})
+_RUBY_ASSIGNMENTS = frozenset({"assignment", "operator_assignment"})
+#: Ruby nodes with a `pattern` field whose names are all captures:
+#: `case x in [a, b]`, `x in [a, b]`, `x => {name:}`.
+_RUBY_NODES_WITH_A_PATTERN = frozenset({"in_clause", "test_pattern", "match_pattern"})
+#: A scope of its own inside a method. A nested method is read when the walk
+#: reaches it; a class body is in no method.
+_RUBY_NODES_WITH_THEIR_OWN_SCOPE = _RUBY_METHOD_NODES | {"class", "module", "singleton_class"}
+#: A block's implicit parameters: `it` (Ruby 3.4) and `_1` to `_9`. No node declares them.
+_RUBY_IMPLICIT_BLOCK_PARAMETERS = frozenset({"it"} | {f"_{n}" for n in range(1, 10)})
+
+
+def _record_bare_ruby_calls(node, calls: list[tuple[int, str]]) -> None:
+    """Append the bare-name calls of one Ruby method to ``calls``.
+
+    Ruby writes a call of a method with no receiver and no arguments as a bare
+    name (``settings``), and the grammar gives it the ``identifier`` node of a
+    local variable. Read as no call, the commonest way one Ruby method calls
+    another recorded nothing, and a helper called only so had no caller on
+    record (LEDGER L-172).
+
+    The rule is Ruby's own: a bare name is a local variable once the method
+    has introduced it (a parameter, an assignment, a block parameter, a
+    pattern capture, ``rescue => e``), and a method call otherwise. Names are
+    met in source order, so ``y = x; x = 2`` reads the first ``x`` as a call.
+
+    Read from the method node DOWN, once. ⚠ Never from an identifier up:
+    asking a node for its parent costs the depth of the tree (L-164).
+    ⚠ A block parameter stays a local to the end of the method, where Ruby
+    ends it with its block. Toward reporting, and rare.
+    ⚠ What the grammar could not parse (an ``ERROR`` node) is read as
+    introducing every name in it: a name the walk cannot place is not called.
+    ⚠ The method and the receiver of a ``call`` node are left to
+    ``_record_call``, which records both.
+    ⚠ These calls are appended when the method node is met, so they come
+    before the method's ``call`` nodes in its references.
+    """
+    declared: set[str] = set()
+    found: list[tuple[int, str]] = []
+    # (node, its parent's type, its field in the parent, inside a pattern)
+    stack: list[tuple[Any, str, Optional[str], bool]] = []
+    for i in range(node.child_count - 1, -1, -1):
+        parse_budget.checkpoint()
+        stack.append((node.children[i], node.type, node.field_name_for_child(i), False))
+    while stack:
+        parse_budget.checkpoint()
+        current, parent, field, in_pattern = stack.pop()
+        kind = current.type
+        if kind in _RUBY_NODES_WITH_THEIR_OWN_SCOPE:
+            continue
+        if kind == "identifier":
+            name = current.text.decode("utf-8", errors="replace")
+            if (
+                in_pattern
+                or parent in _RUBY_NODES_THAT_DECLARE_THEIR_NAMES
+                or (parent in _RUBY_NODES_THAT_DECLARE_THEIR_NAME_FIELD and field != "value")
+                or (parent in _RUBY_ASSIGNMENTS and field == "left")
+                or (parent == "for" and field == "pattern")
+            ):
+                declared.add(name)
+            elif (parent == "call" and field in ("method", "receiver")) or (
+                # `def obj.m`: `obj` is a local of the scope AROUND the method
+                parent in _RUBY_METHOD_NODES and field in ("name", "object")
+            ) or parent in ("setter", "alias", "undef"):
+                pass  # `def name=(v)`: the `setter` node holds the method's own name
+            elif name not in declared and name not in _RUBY_IMPLICIT_BLOCK_PARAMETERS:
+                found.append((current.start_byte, name))
+            continue
+        if in_pattern and kind == "keyword_pattern" and current.child_by_field_name("value") is None:
+            key = current.child_by_field_name("key")  # `in {name:}` captures `name`
+            if key is not None:
+                declared.add(key.text.decode("utf-8", errors="replace"))
+        holds_a_pattern = kind in _RUBY_NODES_WITH_A_PATTERN
+        unparsed = kind == "ERROR"
+        children = current.children
+        for i in range(len(children) - 1, -1, -1):
+            parse_budget.checkpoint()
+            child_field = current.field_name_for_child(i)
+            stack.append((children[i], kind, child_field, in_pattern or unparsed or (holds_a_pattern and child_field == "pattern")))
+    calls.extend(found)
+
+
 def _record_call(node, source_bytes: bytes, calls: list[tuple[int, str]]) -> None:
     """Append what one call node calls to ``calls``. THE one recorder.
 
@@ -496,6 +634,9 @@ def _record_call(node, source_bytes: bytes, calls: list[tuple[int, str]]) -> Non
         return
     if node.type == _JAVA_CLASS_DECLARATION:
         _record_super_constructor_calls(node, source_bytes, calls)
+        return
+    if node.type in _RUBY_METHOD_NODES:
+        _record_bare_ruby_calls(node, calls)
         return
     name = _extract_call_name(node, source_bytes)
     if name:
